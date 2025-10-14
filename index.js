@@ -22,8 +22,9 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_ANON_KEY) {
-  console.error('ERROR: SUPABASE_URL or SUPABASE_ANON_KEY is not set');
+// Line 27-30, change from:
+if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+  console.error('ERROR: NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY is not set');
   process.exit(1);
 }
 
@@ -34,12 +35,12 @@ const openai = new OpenAI({
 
 // Supabase setup
 const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 
 console.log('✅ Server initialized with environment variables');
-console.log('📍 Supabase URL:', process.env.SUPABASE_URL);
+console.log('📍 Supabase URL:', process.env.NEXT_PUBLIC_SUPABASE_URL);
 console.log('🔑 OpenAI API key:', process.env.OPENAI_API_KEY ? '***' + process.env.OPENAI_API_KEY.slice(-4) : 'NOT SET');
 
 // Helper function to clean JSON response
