@@ -1,11 +1,9 @@
-import 'dotenv/config';
-import { API_URL } from '../config';
+import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
 import OpenAI from 'openai';
 import * as cheerio from 'cheerio';
 import { createClient } from '@supabase/supabase-js';
-import dotenv from 'dotenv';
 
 // Load environment variables
 dotenv.config();
@@ -43,12 +41,12 @@ console.log('✅ Server initialized with environment variables');
 console.log('📍 Supabase URL:', process.env.NEXT_PUBLIC_SUPABASE_URL);
 console.log('🔑 OpenAI API key:', process.env.OPENAI_API_KEY ? '***' + process.env.OPENAI_API_KEY.slice(-4) : 'NOT SET');
 
-// Helper function to clean JSON from AI response
+// Helper function to clean JSON response
 function cleanJSONResponse(response) {
   if (!response) throw new Error('Empty response');
 
   // Remove markdown code blocks
-  let cleaned = response.replace(/``````/g, '').trim();
+  let cleaned = response.replace(/```json\n?/g, '').replace(/```/g, '').trim();
 
   try {
     return JSON.parse(cleaned);
@@ -76,7 +74,9 @@ function isValidUserId(userId) {
   return emailRegex.test(userId);
 }
 
-// Enhanced AI Analysis Endpoint
+// ============================================
+// ENHANCED AI ANALYSIS ENDPOINT
+// ============================================
 app.post('/api/analyze', async (req, res) => {
   try {
     const { content, contentType } = req.body;
@@ -293,15 +293,15 @@ Return ONLY this JSON:
         tags: ['screenshot', 'saved']
       },
       'url': {
-        title: content.title?.substring(0, 60) || 'Saved Link',
+        title: content?.title?.substring(0, 60) || 'Saved Link',
         category: 'Other',
-        summary: content.description?.substring(0, 200) || 'Link saved successfully for later reference.',
+        summary: content?.description?.substring(0, 200) || 'Link saved successfully for later reference.',
         tags: ['link', 'saved']
       },
       'text': {
-        title: content.split('\n')[0].substring(0, 60) || 'Quick Note',
+        title: content?.split('\n')[0]?.substring(0, 60) || 'Quick Note',
         category: 'Other',
-        summary: content.substring(0, 200) || 'Note saved successfully.',
+        summary: content?.substring(0, 200) || 'Note saved successfully.',
         tags: ['note', 'saved']
       }
     };
@@ -359,7 +359,7 @@ app.post('/api/scrape', async (req, res) => {
   }
 });
 
-// Get saved items endpoint - NOW WITH USER AUTHENTICATION
+// Get saved items endpoint - WITH USER AUTHENTICATION
 app.get('/api/saved-items', async (req, res) => {
   try {
     const { userId, category } = req.query;
@@ -399,7 +399,7 @@ app.get('/api/saved-items', async (req, res) => {
   }
 });
 
-// Process content endpoint - NOW WITH USER AUTHENTICATION
+// Process content endpoint - WITH USER AUTHENTICATION
 app.post('/api/process-content', async (req, res) => {
   try {
     const { content, contentType, userId } = req.body;
@@ -420,10 +420,13 @@ app.post('/api/process-content', async (req, res) => {
     
     let processedContent;
     
+    // Get the server's own URL
+    const serverUrl = `http://localhost:${PORT}`;
+    
     if (contentType === 'url') {
       // First scrape the URL
       console.log('Scraping URL...');
-      const scrapeResponse = await fetch(`${API_URL}/api/scrape`, {
+      const scrapeResponse = await fetch(`${serverUrl}/api/scrape`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: content })
@@ -433,7 +436,7 @@ app.post('/api/process-content', async (req, res) => {
       
       // Then analyze it
       console.log('Analyzing URL content...');
-      const analyzeResponse = await fetch(`${API_URL}/api/analyze`, {
+      const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: scrapedData, contentType: 'url' })
@@ -442,7 +445,7 @@ app.post('/api/process-content', async (req, res) => {
       
     } else if (contentType === 'image') {
       console.log('Analyzing image...');
-      const analyzeResponse = await fetch(`${API_URL}/api/analyze`, {
+      const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, contentType: 'image' })
@@ -452,7 +455,7 @@ app.post('/api/process-content', async (req, res) => {
     } else {
       // Handle text content
       console.log('Analyzing text content...');
-      const analyzeResponse = await fetch(`${API_URL}/api/analyze`, {
+      const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, contentType: 'text' })
@@ -501,7 +504,7 @@ app.post('/api/process-content', async (req, res) => {
   }
 });
 
-// Toggle completion endpoint - NOW WITH USER AUTHENTICATION
+// Toggle completion endpoint - WITH USER AUTHENTICATION
 app.patch('/api/toggle-completion', async (req, res) => {
   try {
     const { itemId, completed, userId } = req.body;
@@ -552,7 +555,7 @@ app.patch('/api/toggle-completion', async (req, res) => {
   }
 });
 
-// Delete item endpoint - NEW WITH USER AUTHENTICATION
+// Delete item endpoint - WITH USER AUTHENTICATION
 app.delete('/api/delete-item', async (req, res) => {
   try {
     const { itemId, userId } = req.body;
@@ -591,7 +594,7 @@ app.delete('/api/delete-item', async (req, res) => {
   }
 });
 
-// Get user stats endpoint - NEW
+// Get user stats endpoint
 app.get('/api/user-stats', async (req, res) => {
   try {
     const { userId } = req.query;
@@ -662,19 +665,9 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Catch-all for invalid user authentication
-app.use('*', (req, res, next) => {
-  // If request has userId in body/query, validate it
-  const userId = req.body?.userId || req.query?.userId;
-  if (userId && !isValidUserId(userId)) {
-    return res.status(401).json({ 
-      error: 'Authentication required. Please sign in.' 
-    });
-  }
-  next();
-});
-
+// Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`DANGIT Server v2.1.0 running on http://0.0.0.0:${PORT}`);
-  console.log('Features: Enhanced AI Analysis, User Authentication, Content Organization');
+  console.log(`🚀 DANGIT Server v2.1.0 running on http://0.0.0.0:${PORT}`);
+  console.log('✨ Features: Enhanced AI Analysis, User Authentication, Smart Content Organization');
+  console.log('📊 AI Models: GPT-4o (vision), GPT-4o-mini (text)');
 });
