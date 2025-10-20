@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { API_URL } from '../config';
 import express from 'express';
 import cors from 'cors';
 import OpenAI from 'openai';
@@ -22,7 +23,6 @@ if (!process.env.OPENAI_API_KEY) {
   process.exit(1);
 }
 
-// Line 27-30, change from:
 if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
   console.error('ERROR: NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY is not set');
   process.exit(1);
@@ -43,14 +43,17 @@ console.log('✅ Server initialized with environment variables');
 console.log('📍 Supabase URL:', process.env.NEXT_PUBLIC_SUPABASE_URL);
 console.log('🔑 OpenAI API key:', process.env.OPENAI_API_KEY ? '***' + process.env.OPENAI_API_KEY.slice(-4) : 'NOT SET');
 
-// Helper function to clean JSON response
+// Helper function to clean JSON from AI response
 function cleanJSONResponse(response) {
-  if (!response) return null;
-  let cleaned = response.replace(/```json\n?/g, '').replace(/```/g, '').trim();
-  
+  if (!response) throw new Error('Empty response');
+
+  // Remove markdown code blocks
+  let cleaned = response.replace(/``````/g, '').trim();
+
   try {
     return JSON.parse(cleaned);
   } catch (error) {
+    // Try to extract JSON from mixed content
     const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
@@ -73,78 +76,241 @@ function isValidUserId(userId) {
   return emailRegex.test(userId);
 }
 
-// Analyze content endpoint
+// Enhanced AI Analysis Endpoint
 app.post('/api/analyze', async (req, res) => {
   try {
     const { content, contentType } = req.body;
-    console.log('Analyzing:', contentType);
+    console.log('Analyzing content type:', contentType);
 
+    let analysisResult;
+
+    // ============================================
+    // IMAGE ANALYSIS - Detailed & Specific
+    // ============================================
     if (contentType === 'image') {
       const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: "gpt-4o", // Better vision model
         messages: [
           {
             role: "system",
-            content: "You are an expert image analyzer. Return ONLY valid JSON with no markdown formatting."
+            content: `You are DANGIT's content analyzer. Your job is to extract useful, actionable information from images.
+
+BE SPECIFIC, NOT GENERIC:
+❌ Bad: "Image of a recipe"
+✅ Good: "Tiramisu Recipe - Coffee & Mascarpone dessert"
+
+❌ Bad: "Screenshot of text"
+✅ Good: "Assignment Due Oct 25 - Submit research paper"
+
+EXTRACT KEY DETAILS:
+- Recipe: Dish name, main ingredients, cuisine type
+- Deadline/Task: What needs to be done, when, priority
+- Coupon: Discount amount, code, expiry date, where to use
+- Product: Item name, price, store/brand
+- Event: Event name, date, time, location
+- Contact: Person name, role, company if visible
+
+Return JSON that sounds natural and helpful, not robotic.`
           },
           {
             role: "user",
             content: [
               { 
                 type: "text", 
-                text: `Analyze this image and return ONLY a JSON object:
-                {
-                  "title": "what is this image about (max 60 chars)",
-                  "category": "best category from: AI Tools, Learning, Entertainment, Shopping, Food & Dining, Coupons & Deals, Productivity, Health & Fitness, Travel, Finance, Other",
-                  "summary": "what information can be extracted from this image",
-                  "tags": ["relevant", "tags", "array"]
-                }` 
+                text: `Analyze this image and extract detailed information.
+
+Create a natural-sounding title and summary that captures what matters.
+
+Examples of good titles:
+- "Butter Chicken Recipe with Cashew Paste"
+- "Flipkart Sale - 40% Off Electronics till Nov 5"
+- "Math Assignment Due Monday 9 AM"
+- "Gym Membership: ₹3000 for 3 months"
+
+Return ONLY this JSON:
+{
+  "title": "specific, helpful title (max 60 chars)",
+  "category": "best category from: AI Tools, Learning, Entertainment, Shopping, Food & Dining, Coupons & Deals, Productivity, Health & Fitness, Travel, Finance, Other",
+  "summary": "Natural 2-3 sentence description of what this is and why it matters. Include key details like dates, prices, ingredients, or action items.",
+  "tags": ["specific", "useful", "tags"],
+  "extracted_info": {
+    "deadline": "YYYY-MM-DD or null",
+    "price": "amount with currency or null",
+    "code": "coupon/promo code or null",
+    "action_needed": "what user should do, or null"
+  }
+}` 
               },
               {
                 type: "image_url",
-                image_url: { url: content, detail: "low" }
+                image_url: { 
+                  url: content, 
+                  detail: "high" // High detail for better analysis
+                }
               }
             ]
           }
         ],
-        max_tokens: 300,
-        temperature: 0.1
+        max_tokens: 1000,
+        temperature: 0.3 // Balanced between creative and factual
       });
 
-      const result = cleanJSONResponse(response.choices[0].message.content);
-      res.json(result);
+      const rawResponse = response.choices[0].message.content;
+      console.log('GPT-4 Vision response:', rawResponse);
+      analysisResult = cleanJSONResponse(rawResponse);
+    }
 
-    } else {
-      // Handle URL and text content
-      let prompt = '';
-      
-      if (contentType === 'url') {
-        prompt = `Analyze this webpage: Title: ${content.title}, Description: ${content.description}. Return ONLY JSON: {"title":"short catchy title (max 60 chars)", "category":"one of: AI Tools, Learning, Entertainment, Shopping, Food & Dining, Coupons & Deals, Productivity, Health & Fitness, Travel, Finance, Other", "summary":"2-sentence summary", "tags":["tag1", "tag2", "tag3"]}`;
-      } else {
-        prompt = `Analyze this content: "${content}". Return ONLY JSON: {"title":"short catchy title (max 60 chars)", "category":"one of: AI Tools, Learning, Entertainment, Shopping, Food & Dining, Coupons & Deals, Productivity, Health & Fitness, Travel, Finance, Other", "summary":"2-sentence summary", "tags":["tag1", "tag2", "tag3"]}`;
-      }
+    // ============================================
+    // URL ANALYSIS - Deep & Contextual
+    // ============================================
+    else if (contentType === 'url') {
+      const prompt = `Analyze this webpage and create a helpful, natural description.
+
+Title: ${content.title}
+Description: ${content.description}
+URL: ${content.url}
+
+BE HELPFUL & SPECIFIC:
+❌ Bad: "Article about productivity"
+✅ Good: "7 Morning Habits That Boost Productivity - Time blocking guide"
+
+❌ Bad: "YouTube video"
+✅ Good: "Python Tutorial: Build a To-Do App in 30 Minutes"
+
+IDENTIFY CONTENT TYPE & VALUE:
+- Article: Main topic + key takeaway
+- Video: What you'll learn/see
+- Product: What it is + price range if mentioned
+- Tool/App: What it does + who it's for
+- Recipe: Dish name + cuisine + difficulty
+- Course: What you'll learn + duration if mentioned
+
+Return ONLY this JSON:
+{
+  "title": "clear, specific title that tells me what this is (max 60 chars)",
+  "category": "best fit from: AI Tools, Learning, Entertainment, Shopping, Food & Dining, Coupons & Deals, Productivity, Health & Fitness, Travel, Finance, Other",
+  "summary": "Natural 2-3 sentences explaining what this is and why someone would save it. Be conversational, not robotic.",
+  "tags": ["relevant", "searchable", "tags"],
+  "content_type": "article/video/product/tool/recipe/course/guide/other"
+}`;
 
       const response = await openai.chat.completions.create({
-        model: "gpt-3.5-turbo",
+        model: "gpt-4o-mini", // Fast & cheap for text
         messages: [
-          { role: "system", content: "Return ONLY valid JSON with no markdown formatting." },
+          { 
+            role: "system", 
+            content: "You extract useful information from web content. Be specific and helpful, not generic. Sound natural, not like a robot." 
+          },
           { role: "user", content: prompt }
         ],
-        max_tokens: 300,
-        temperature: 0.1
+        max_tokens: 600,
+        temperature: 0.4
       });
 
-      const result = cleanJSONResponse(response.choices[0].message.content);
-      res.json(result);
+      const rawResponse = response.choices[0].message.content;
+      console.log('GPT-4 URL response:', rawResponse);
+      analysisResult = cleanJSONResponse(rawResponse);
     }
+
+    // ============================================
+    // TEXT/NOTE ANALYSIS - Light Touch
+    // ============================================
+    else if (contentType === 'text') {
+      const prompt = `The user wrote this note. Help organize it WITHOUT over-analyzing.
+
+User's note:
+"${content}"
+
+RULES:
+1. Respect their words - don't rewrite unnecessarily
+2. Create a SHORT title from their first line or main topic
+3. Keep the summary brief and close to their original intent
+4. Only suggest obvious tags
+5. Don't be overly formal - match their tone
+
+Examples:
+User: "Buy milk, eggs, bread from store tomorrow"
+Title: "Grocery Shopping Tomorrow"
+Summary: "Need to buy milk, eggs, and bread"
+
+User: "Call mom about Diwali plans - she wants to finalize guest list"
+Title: "Call Mom - Diwali Planning"
+Summary: "Discuss and finalize the guest list for Diwali"
+
+Return ONLY this JSON:
+{
+  "title": "short title from their content (max 60 chars)",
+  "category": "suggest best category but don't overthink",
+  "summary": "brief, natural summary - 1-2 sentences max",
+  "tags": ["simple", "obvious", "tags"],
+  "note_type": "list/reminder/idea/plan/other"
+}`;
+
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          { 
+            role: "system", 
+            content: "You help organize user notes with a light touch. Don't overanalyze. Keep it simple and respect their words." 
+          },
+          { role: "user", content: prompt }
+        ],
+        max_tokens: 400,
+        temperature: 0.3
+      });
+
+      const rawResponse = response.choices[0].message.content;
+      console.log('GPT-4 Text response:', rawResponse);
+      analysisResult = cleanJSONResponse(rawResponse);
+    }
+
+    // ============================================
+    // VALIDATION & FALLBACK
+    // ============================================
+    
+    // Ensure we have all required fields
+    if (!analysisResult.title || !analysisResult.category || !analysisResult.summary) {
+      throw new Error('Invalid AI response format');
+    }
+
+    // Clean up the response
+    analysisResult.title = analysisResult.title.substring(0, 60); // Enforce length
+    analysisResult.summary = analysisResult.summary.substring(0, 300); // Reasonable summary length
+    analysisResult.tags = (analysisResult.tags || []).slice(0, 5); // Max 5 tags
+
+    console.log('Final analysis result:', analysisResult);
+    res.json(analysisResult);
 
   } catch (error) {
     console.error('Analysis error:', error);
-    res.status(500).json({
-      title: 'Analysis Failed',
+    
+    // Better fallback responses
+    const fallbackResponses = {
+      'image': {
+        title: 'Saved Screenshot',
+        category: 'Other',
+        summary: 'Screenshot saved successfully. AI analysis had an issue, but your content is safely stored.',
+        tags: ['screenshot', 'saved']
+      },
+      'url': {
+        title: content.title?.substring(0, 60) || 'Saved Link',
+        category: 'Other',
+        summary: content.description?.substring(0, 200) || 'Link saved successfully for later reference.',
+        tags: ['link', 'saved']
+      },
+      'text': {
+        title: content.split('\n')[0].substring(0, 60) || 'Quick Note',
+        category: 'Other',
+        summary: content.substring(0, 200) || 'Note saved successfully.',
+        tags: ['note', 'saved']
+      }
+    };
+
+    res.json(fallbackResponses[contentType] || {
+      title: 'Saved Content',
       category: 'Other',
-      summary: 'Could not analyze content',
-      tags: ['error', 'needs-review']
+      summary: 'Content saved successfully.',
+      tags: ['saved']
     });
   }
 });
@@ -257,7 +423,7 @@ app.post('/api/process-content', async (req, res) => {
     if (contentType === 'url') {
       // First scrape the URL
       console.log('Scraping URL...');
-      const scrapeResponse = await fetch('http://localhost:3001/api/scrape', {
+      const scrapeResponse = await fetch(`${API_URL}/api/scrape`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: content })
@@ -267,7 +433,7 @@ app.post('/api/process-content', async (req, res) => {
       
       // Then analyze it
       console.log('Analyzing URL content...');
-      const analyzeResponse = await fetch('http://localhost:3001/api/analyze', {
+      const analyzeResponse = await fetch(`${API_URL}/api/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: scrapedData, contentType: 'url' })
@@ -276,7 +442,7 @@ app.post('/api/process-content', async (req, res) => {
       
     } else if (contentType === 'image') {
       console.log('Analyzing image...');
-      const analyzeResponse = await fetch('http://localhost:3001/api/analyze', {
+      const analyzeResponse = await fetch(`${API_URL}/api/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, contentType: 'image' })
@@ -286,7 +452,7 @@ app.post('/api/process-content', async (req, res) => {
     } else {
       // Handle text content
       console.log('Analyzing text content...');
-      const analyzeResponse = await fetch('http://localhost:3001/api/analyze', {
+      const analyzeResponse = await fetch(`${API_URL}/api/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, contentType: 'text' })
@@ -490,9 +656,9 @@ app.get('/api/user-stats', async (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    message: 'DANGIT server is running with user authentication',
+    message: 'DANGIT server is running with enhanced AI analysis',
     timestamp: new Date().toISOString(),
-    version: '2.0.0'
+    version: '2.1.0'
   });
 });
 
@@ -509,6 +675,6 @@ app.use('*', (req, res, next) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`DANGIT Server v2.0.0 running on http://0.0.0.0:${PORT}`);
-  console.log('Features: User Authentication, AI Analysis, Content Organization');
+  console.log(`DANGIT Server v2.1.0 running on http://0.0.0.0:${PORT}`);
+  console.log('Features: Enhanced AI Analysis, User Authentication, Content Organization');
 });
