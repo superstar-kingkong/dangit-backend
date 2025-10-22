@@ -475,7 +475,7 @@ app.post('/api/process-content', async (req, res) => {
     
     // Determine server URL based on environment
     const serverUrl = process.env.NODE_ENV === 'production' 
-      ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'your-app.onrender.com'}` 
+      ? 'https://dangit-backend.onrender.com' 
       : `http://localhost:${process.env.PORT || 3001}`;
     
     // ============================================
