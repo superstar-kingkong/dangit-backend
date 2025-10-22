@@ -46,7 +46,7 @@ function cleanJSONResponse(response) {
   if (!response) throw new Error('Empty response');
 
   // Remove markdown code blocks
-  let cleaned = response.replace(/```json\n?/g, '').replace(/```/g, '').trim();
+  let cleaned = response.replace(/``````/g, '').trim();
 
   try {
     return JSON.parse(cleaned);
@@ -399,12 +399,66 @@ app.get('/api/saved-items', async (req, res) => {
   }
 });
 
-// Process content endpoint - WITH USER AUTHENTICATION
+// Upload image to Supabase Storage
+app.post('/api/storage/upload-image', async (req, res) => {
+  try {
+    const { imageData, userId, fileName } = req.body;
+    
+    if (!isValidUserId(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+    
+    console.log('📤 Uploading image for user:', userId);
+    
+    // Remove data URL prefix if present
+    const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+    
+    // Create unique filename
+    const uniqueFileName = `${userId}/${Date.now()}-${fileName || 'screenshot.png'}`;
+    
+    // Upload to Supabase Storage
+    const { data, error } = await supabase.storage
+      .from('saved-images')
+      .upload(uniqueFileName, buffer, {
+        contentType: 'image/png',
+        upsert: false
+      });
+    
+    if (error) {
+      console.error('❌ Upload error:', error);
+      throw error;
+    }
+    
+    // Get public URL
+    const { data: urlData } = supabase.storage
+      .from('saved-images')
+      .getPublicUrl(uniqueFileName);
+    
+    console.log('✅ Image uploaded successfully:', uniqueFileName);
+    
+    res.json({ 
+      success: true, 
+      url: urlData.publicUrl,
+      path: uniqueFileName
+    });
+    
+  } catch (error) {
+    console.error('Image upload error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to upload image' 
+    });
+  }
+});
+
+// ============================================
+// ENHANCED PROCESS CONTENT ENDPOINT (REPLACES OLD ONE)
+// ============================================
 app.post('/api/process-content', async (req, res) => {
   try {
     const { content, contentType, userId } = req.body;
     
-    // Validate user ID
     if (!isValidUserId(userId)) {
       return res.status(400).json({ 
         success: false,
@@ -412,70 +466,143 @@ app.post('/api/process-content', async (req, res) => {
       });
     }
     
-    console.log('Processing content for authenticated user:', { 
-      contentType, 
-      userId, 
-      contentPreview: content?.substring?.(0, 100) 
-    });
+    console.log('🚀 Processing content (enhanced):', { contentType, userId });
     
     let processedContent;
+    let imageUrl = null;
+    let previewData = null;
+    let contentMetadata = {};
     
-    // Get the server's own URL
-    const serverUrl = `http://localhost:${PORT}`;
+    // Determine server URL based on environment
+    const serverUrl = process.env.NODE_ENV === 'production' 
+      ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'your-app.onrender.com'}` 
+      : `http://localhost:${process.env.PORT || 3001}`;
     
-    if (contentType === 'url') {
-      // First scrape the URL
-      console.log('Scraping URL...');
-      const scrapeResponse = await fetch(`${serverUrl}/api/scrape`, {
+    // ============================================
+    // IMAGE PROCESSING WITH STORAGE
+    // ============================================
+    if (contentType === 'image') {
+      console.log('📸 Processing image with storage...');
+      
+      // Upload image to Supabase Storage
+      const uploadResponse = await fetch(`${serverUrl}/api/storage/upload-image`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: content })
+        body: JSON.stringify({ 
+          imageData: content, 
+          userId,
+          fileName: `screenshot-${Date.now()}.png`
+        })
       });
-      const scrapedData = await scrapeResponse.json();
-      console.log('Scraped data:', scrapedData);
       
-      // Then analyze it
-      console.log('Analyzing URL content...');
-      const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: scrapedData, contentType: 'url' })
-      });
-      processedContent = await analyzeResponse.json();
+      const uploadResult = await uploadResponse.json();
       
-    } else if (contentType === 'image') {
-      console.log('Analyzing image...');
+      if (uploadResult.success) {
+        imageUrl = uploadResult.url;
+        contentMetadata = {
+          storage_path: uploadResult.path,
+          uploaded_at: new Date().toISOString(),
+          file_size: Math.round(content.length * 0.75) // Approximate base64 to bytes
+        };
+        console.log('✅ Image uploaded to:', imageUrl);
+      } else {
+        console.error('❌ Image upload failed:', uploadResult.error);
+      }
+      
+      // Analyze image with AI
       const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, contentType: 'image' })
       });
       processedContent = await analyzeResponse.json();
+    }
+    
+    // ============================================
+    // URL PROCESSING WITH PREVIEW DATA
+    // ============================================
+    else if (contentType === 'url') {
+      console.log('🔗 Processing URL with preview data...');
       
-    } else {
-      // Handle text content
-      console.log('Analyzing text content...');
+      const scrapeResponse = await fetch(`${serverUrl}/api/scrape`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: content })
+      });
+      const scrapedData = await scrapeResponse.json();
+      
+      // Store rich preview data
+      try {
+        const urlObj = new URL(scrapedData.url);
+        previewData = {
+          url: scrapedData.url,
+          domain: urlObj.hostname,
+          title: scrapedData.title,
+          description: scrapedData.description,
+          favicon: `https://www.google.com/s2/favicons?domain=${urlObj.hostname}&sz=64`
+        };
+        contentMetadata = { 
+          domain: urlObj.hostname,
+          protocol: urlObj.protocol 
+        };
+      } catch (error) {
+        console.error('URL parsing error:', error);
+        previewData = {
+          url: content,
+          title: scrapedData.title,
+          description: scrapedData.description
+        };
+      }
+      
+      const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: scrapedData, contentType: 'url' })
+      });
+      processedContent = await analyzeResponse.json();
+    }
+    
+    // ============================================
+    // TEXT PROCESSING WITH METADATA
+    // ============================================
+    else {
+      console.log('📝 Processing text with metadata...');
+      
       const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content, contentType: 'text' })
       });
       processedContent = await analyzeResponse.json();
+      
+      // Add text metadata
+      const words = content.trim().split(/\s+/).length;
+      contentMetadata = {
+        word_count: words,
+        char_count: content.length,
+        estimated_read_time: Math.max(1, Math.ceil(words / 200)) // minutes
+      };
     }
     
-    // Save to database with user authentication
-    console.log('Saving to database for user:', userId);
+    // ============================================
+    // SAVE TO DATABASE WITH ENHANCED DATA
+    // ============================================
+    console.log('💾 Saving to database with enhanced data...');
     const { data, error } = await supabase
       .from('saved_items')
       .insert({
-        user_id: userId, // Save with authenticated user's ID
+        user_id: userId,
         title: processedContent.title,
         content_type: contentType,
-        original_content: content,
+        original_content: contentType === 'image' ? null : content,
+        original_image_url: imageUrl,
+        preview_data: previewData,
+        content_metadata: contentMetadata,
         ai_summary: processedContent.summary,
         ai_category: processedContent.category,
         ai_tags: processedContent.tags,
-        is_completed: false
+        is_completed: false,
+        view_count: 0
       })
       .select()
       .single();
@@ -488,12 +615,8 @@ app.post('/api/process-content', async (req, res) => {
       });
     }
 
-    console.log('Successfully saved to database for user:', userId);
-    
-    res.json({ 
-      success: true, 
-      data: data
-    });
+    console.log('✅ Successfully saved with enhanced features!');
+    res.json({ success: true, data: data });
     
   } catch (error) {
     console.error('Process content error:', error);
@@ -655,213 +778,6 @@ app.get('/api/user-stats', async (req, res) => {
   }
 });
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    message: 'DANGIT server is running with enhanced AI analysis',
-    timestamp: new Date().toISOString(),
-    version: '2.1.0'
-  });
-});
-
-// ============================================
-// PASTE THIS CODE BEFORE app.listen()
-// ============================================
-
-// Upload image to Supabase Storage
-app.post('/api/storage/upload-image', async (req, res) => {
-  try {
-    const { imageData, userId, fileName } = req.body;
-    
-    if (!isValidUserId(userId)) {
-      return res.status(400).json({ error: 'Invalid user ID' });
-    }
-    
-    // Remove data URL prefix if present
-    const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
-    const buffer = Buffer.from(base64Data, 'base64');
-    
-    // Create unique filename
-    const uniqueFileName = `${userId}/${Date.now()}-${fileName || 'screenshot.png'}`;
-    
-    // Upload to Supabase Storage
-    const { data, error } = await supabase.storage
-      .from('saved-images')
-      .upload(uniqueFileName, buffer, {
-        contentType: 'image/png',
-        upsert: false
-      });
-    
-    if (error) {
-      console.error('Upload error:', error);
-      throw error;
-    }
-    
-    // Get public URL
-    const { data: urlData } = supabase.storage
-      .from('saved-images')
-      .getPublicUrl(uniqueFileName);
-    
-    res.json({ 
-      success: true, 
-      url: urlData.publicUrl,
-      path: uniqueFileName
-    });
-    
-  } catch (error) {
-    console.error('Image upload error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to upload image' 
-    });
-  }
-});
-
-// Enhanced process content with image storage
-app.post('/api/process-content-v2', async (req, res) => {
-  try {
-    const { content, contentType, userId } = req.body;
-    
-    if (!isValidUserId(userId)) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid or missing user ID. Please sign in.' 
-      });
-    }
-    
-    console.log('Processing content v2:', { contentType, userId });
-    
-    let processedContent;
-    let imageUrl = null;
-    let previewData = null;
-    let contentMetadata = {};
-    const serverUrl = `http://localhost:${process.env.PORT || 3001}`;
-    
-    // IMAGE PROCESSING
-    if (contentType === 'image') {
-      console.log('Uploading image to storage...');
-      
-      // Upload image
-      const uploadResponse = await fetch(`${serverUrl}/api/storage/upload-image`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          imageData: content, 
-          userId,
-          fileName: `screenshot-${Date.now()}.png`
-        })
-      });
-      
-      const uploadResult = await uploadResponse.json();
-      
-      if (uploadResult.success) {
-        imageUrl = uploadResult.url;
-        contentMetadata = {
-          storage_path: uploadResult.path,
-          uploaded_at: new Date().toISOString()
-        };
-      }
-      
-      // Analyze image
-      const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, contentType: 'image' })
-      });
-      processedContent = await analyzeResponse.json();
-    }
-    
-    // URL PROCESSING
-    else if (contentType === 'url') {
-      console.log('Processing URL...');
-      
-      const scrapeResponse = await fetch(`${serverUrl}/api/scrape`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: content })
-      });
-      const scrapedData = await scrapeResponse.json();
-      
-      // Store preview data
-      const urlObj = new URL(scrapedData.url);
-      previewData = {
-        url: scrapedData.url,
-        domain: urlObj.hostname,
-        title: scrapedData.title,
-        description: scrapedData.description,
-        favicon: `https://www.google.com/s2/favicons?domain=${urlObj.hostname}&sz=64`
-      };
-      
-      const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: scrapedData, contentType: 'url' })
-      });
-      processedContent = await analyzeResponse.json();
-      
-      contentMetadata = { domain: urlObj.hostname };
-    }
-    
-    // TEXT PROCESSING
-    else {
-      console.log('Processing text...');
-      
-      const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content, contentType: 'text' })
-      });
-      processedContent = await analyzeResponse.json();
-      
-      const words = content.trim().split(/\s+/).length;
-      contentMetadata = {
-        word_count: words,
-        char_count: content.length
-      };
-    }
-    
-    // SAVE TO DATABASE
-    console.log('Saving to database...');
-    const { data, error } = await supabase
-      .from('saved_items')
-      .insert({
-        user_id: userId,
-        title: processedContent.title,
-        content_type: contentType,
-        original_content: contentType === 'image' ? null : content,
-        original_image_url: imageUrl,
-        preview_data: previewData,
-        content_metadata: contentMetadata,
-        ai_summary: processedContent.summary,
-        ai_category: processedContent.category,
-        ai_tags: processedContent.tags,
-        is_completed: false,
-        view_count: 0
-      })
-      .select()
-      .single();
-
-    if (error) {
-      console.error('Database error:', error);
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Failed to save to database' 
-      });
-    }
-
-    console.log('✅ Successfully saved!');
-    res.json({ success: true, data: data });
-    
-  } catch (error) {
-    console.error('Process content v2 error:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to process content' 
-    });
-  }
-});
-
 // Get item with full details (for card detail view)
 app.get('/api/item/:itemId', async (req, res) => {
   try {
@@ -900,9 +816,22 @@ app.get('/api/item/:itemId', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch item' });
   }
 });
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'DANGIT server running with enhanced features',
+    timestamp: new Date().toISOString(),
+    version: '2.2.0',
+    features: ['Enhanced AI Analysis', 'Image Storage', 'Link Previews', 'View Tracking']
+  });
+});
+
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 DANGIT Server v2.1.0 running on http://0.0.0.0:${PORT}`);
-  console.log('✨ Features: Enhanced AI Analysis, User Authentication, Smart Content Organization');
+  console.log(`🚀 DANGIT Server v2.2.0 running on http://0.0.0.0:${PORT}`);
+  console.log('✨ Enhanced Features: Image Storage, Link Previews, View Tracking');
   console.log('📊 AI Models: GPT-4o (vision), GPT-4o-mini (text)');
+  console.log('🗂️ Storage: Supabase Storage for images');
 });
