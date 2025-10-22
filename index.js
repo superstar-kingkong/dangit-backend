@@ -64,19 +64,65 @@ function cleanJSONResponse(response) {
   }
 }
 
-// Validate user ID (basic validation for email format)
-function isValidUserId(userId) {
-  if (!userId || userId === 'anonymous-user') {
-    return false;
+// ============================================
+// 🔒 SECURE AUTHENTICATION MIDDLEWARE
+// ============================================
+async function authenticateUser(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ 
+        error: 'Authentication required. Please provide a valid token.',
+        code: 'NO_AUTH_TOKEN'
+      });
+    }
+    
+    const token = authHeader.replace('Bearer ', '');
+    
+    // Verify JWT token with Supabase
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    
+    if (error || !user) {
+      console.log('Authentication failed:', error?.message);
+      return res.status(401).json({ 
+        error: 'Invalid or expired authentication token. Please sign in again.',
+        code: 'INVALID_TOKEN'
+      });
+    }
+    
+    // Attach authenticated user to request
+    req.authenticatedUser = user;
+    req.userId = user.email; // Use verified email from token
+    
+    console.log('✅ Authenticated user:', user.email);
+    next();
+    
+  } catch (error) {
+    console.error('Authentication error:', error);
+    res.status(401).json({ 
+      error: 'Authentication failed. Please sign in again.',
+      code: 'AUTH_ERROR'
+    });
   }
-  // Check if it looks like an email
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return emailRegex.test(userId);
 }
 
 // ============================================
-// ENHANCED AI ANALYSIS ENDPOINT
+// PUBLIC ENDPOINTS (No authentication required)
 // ============================================
+
+// Health check endpoint (public for monitoring)
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'DANGIT server running with SECURE authentication',
+    timestamp: new Date().toISOString(),
+    version: '2.3.0-SECURE',
+    features: ['🔒 Secure Auth', 'Enhanced AI Analysis', 'Image Storage', 'Link Previews', 'View Tracking']
+  });
+});
+
+// AI Analysis endpoint (internal use only)
 app.post('/api/analyze', async (req, res) => {
   try {
     const { content, contentType } = req.body;
@@ -84,12 +130,10 @@ app.post('/api/analyze', async (req, res) => {
 
     let analysisResult;
 
-    // ============================================
     // IMAGE ANALYSIS - Detailed & Specific
-    // ============================================
     if (contentType === 'image') {
       const response = await openai.chat.completions.create({
-        model: "gpt-4o", // Better vision model
+        model: "gpt-4o",
         messages: [
           {
             role: "system",
@@ -145,14 +189,14 @@ Return ONLY this JSON:
                 type: "image_url",
                 image_url: { 
                   url: content, 
-                  detail: "high" // High detail for better analysis
+                  detail: "high"
                 }
               }
             ]
           }
         ],
         max_tokens: 1000,
-        temperature: 0.3 // Balanced between creative and factual
+        temperature: 0.3
       });
 
       const rawResponse = response.choices[0].message.content;
@@ -160,9 +204,7 @@ Return ONLY this JSON:
       analysisResult = cleanJSONResponse(rawResponse);
     }
 
-    // ============================================
     // URL ANALYSIS - Deep & Contextual
-    // ============================================
     else if (contentType === 'url') {
       const prompt = `Analyze this webpage and create a helpful, natural description.
 
@@ -195,7 +237,7 @@ Return ONLY this JSON:
 }`;
 
       const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini", // Fast & cheap for text
+        model: "gpt-4o-mini",
         messages: [
           { 
             role: "system", 
@@ -212,9 +254,7 @@ Return ONLY this JSON:
       analysisResult = cleanJSONResponse(rawResponse);
     }
 
-    // ============================================
     // TEXT/NOTE ANALYSIS - Light Touch
-    // ============================================
     else if (contentType === 'text') {
       const prompt = `The user wrote this note. Help organize it WITHOUT over-analyzing.
 
@@ -264,19 +304,14 @@ Return ONLY this JSON:
       analysisResult = cleanJSONResponse(rawResponse);
     }
 
-    // ============================================
-    // VALIDATION & FALLBACK
-    // ============================================
-    
-    // Ensure we have all required fields
+    // Validation & cleanup
     if (!analysisResult.title || !analysisResult.category || !analysisResult.summary) {
       throw new Error('Invalid AI response format');
     }
 
-    // Clean up the response
-    analysisResult.title = analysisResult.title.substring(0, 60); // Enforce length
-    analysisResult.summary = analysisResult.summary.substring(0, 300); // Reasonable summary length
-    analysisResult.tags = (analysisResult.tags || []).slice(0, 5); // Max 5 tags
+    analysisResult.title = analysisResult.title.substring(0, 60);
+    analysisResult.summary = analysisResult.summary.substring(0, 300);
+    analysisResult.tags = (analysisResult.tags || []).slice(0, 5);
 
     console.log('Final analysis result:', analysisResult);
     res.json(analysisResult);
@@ -284,7 +319,6 @@ Return ONLY this JSON:
   } catch (error) {
     console.error('Analysis error:', error);
     
-    // Better fallback responses
     const fallbackResponses = {
       'image': {
         title: 'Saved Screenshot',
@@ -315,13 +349,12 @@ Return ONLY this JSON:
   }
 });
 
-// Scrape URL endpoint
+// Scrape URL endpoint (internal use only)
 app.post('/api/scrape', async (req, res) => {
   try {
     const { url } = req.body;
     console.log('Scraping URL:', url);
     
-    // Add protocol if missing
     const fullUrl = url.startsWith('http') ? url : `https://${url}`;
     
     const response = await fetch(fullUrl, {
@@ -349,8 +382,6 @@ app.post('/api/scrape', async (req, res) => {
     
   } catch (error) {
     console.error('Scraping error:', error.message);
-    
-    // Return fallback instead of error
     res.json({
       title: 'Saved Link',
       description: `Link saved: ${req.body.url}`,
@@ -359,24 +390,22 @@ app.post('/api/scrape', async (req, res) => {
   }
 });
 
-// Get saved items endpoint - WITH USER AUTHENTICATION
-app.get('/api/saved-items', async (req, res) => {
+// ============================================
+// 🔒 PROTECTED ENDPOINTS (Authentication required)
+// ============================================
+
+// Get saved items endpoint - SECURE
+app.get('/api/saved-items', authenticateUser, async (req, res) => {
   try {
-    const { userId, category } = req.query;
+    const { category } = req.query;
+    const userId = req.userId; // From authenticated token
     
-    // Validate user ID
-    if (!isValidUserId(userId)) {
-      return res.status(400).json({ 
-        error: 'Invalid or missing user ID. Please sign in.' 
-      });
-    }
-    
-    console.log('Fetching saved items for authenticated user:', userId);
+    console.log('🔒 Securely fetching saved items for user:', userId);
     
     let query = supabase
       .from('saved_items')
       .select('*')
-      .eq('user_id', userId) // Only get items for this specific user
+      .eq('user_id', userId)
       .order('created_at', { ascending: false });
     
     if (category && category !== 'all') {
@@ -390,7 +419,7 @@ app.get('/api/saved-items', async (req, res) => {
       return res.status(500).json({ error: 'Failed to fetch items' });
     }
     
-    console.log(`Found ${data.length} items for user ${userId}`);
+    console.log(`✅ Found ${data.length} items for authenticated user`);
     res.json({ data });
     
   } catch (error) {
@@ -399,22 +428,19 @@ app.get('/api/saved-items', async (req, res) => {
   }
 });
 
-// Upload image to Supabase Storage
-app.post('/api/storage/upload-image', async (req, res) => {
+// Upload image to Supabase Storage - SECURE
+app.post('/api/storage/upload-image', authenticateUser, async (req, res) => {
   try {
-    const { imageData, userId, fileName } = req.body;
+    const { imageData, fileName } = req.body;
+    const userId = req.userId; // From authenticated token
     
-    if (!isValidUserId(userId)) {
-      return res.status(400).json({ error: 'Invalid user ID' });
-    }
-    
-    console.log('📤 Uploading image for user:', userId);
+    console.log('🔒📤 Securely uploading image for user:', userId);
     
     // Remove data URL prefix if present
     const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(base64Data, 'base64');
     
-    // Create unique filename
+    // Create unique filename with authenticated user's email
     const uniqueFileName = `${userId}/${Date.now()}-${fileName || 'screenshot.png'}`;
     
     // Upload to Supabase Storage
@@ -452,45 +478,36 @@ app.post('/api/storage/upload-image', async (req, res) => {
   }
 });
 
-// ============================================
-// ENHANCED PROCESS CONTENT ENDPOINT (REPLACES OLD ONE)
-// ============================================
-app.post('/api/process-content', async (req, res) => {
+// Enhanced process content endpoint - SECURE
+app.post('/api/process-content', authenticateUser, async (req, res) => {
   try {
-    const { content, contentType, userId } = req.body;
+    const { content, contentType } = req.body;
+    const userId = req.userId; // From authenticated token
     
-    if (!isValidUserId(userId)) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Invalid or missing user ID. Please sign in.' 
-      });
-    }
-    
-    console.log('🚀 Processing content (enhanced):', { contentType, userId });
+    console.log('🔒🚀 Securely processing content for user:', userId, '| Type:', contentType);
     
     let processedContent;
     let imageUrl = null;
     let previewData = null;
     let contentMetadata = {};
     
-    // Determine server URL based on environment
     const serverUrl = process.env.NODE_ENV === 'production' 
       ? 'https://dangit-backend.onrender.com' 
       : `http://localhost:${process.env.PORT || 3001}`;
     
-    // ============================================
     // IMAGE PROCESSING WITH STORAGE
-    // ============================================
     if (contentType === 'image') {
-      console.log('📸 Processing image with storage...');
+      console.log('📸 Processing image with secure storage...');
       
-      // Upload image to Supabase Storage
+      // Upload image (using authenticated endpoint)
       const uploadResponse = await fetch(`${serverUrl}/api/storage/upload-image`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': req.headers.authorization // Forward auth token
+        },
         body: JSON.stringify({ 
           imageData: content, 
-          userId,
           fileName: `screenshot-${Date.now()}.png`
         })
       });
@@ -502,9 +519,9 @@ app.post('/api/process-content', async (req, res) => {
         contentMetadata = {
           storage_path: uploadResult.path,
           uploaded_at: new Date().toISOString(),
-          file_size: Math.round(content.length * 0.75) // Approximate base64 to bytes
+          file_size: Math.round(content.length * 0.75)
         };
-        console.log('✅ Image uploaded to:', imageUrl);
+        console.log('✅ Image uploaded securely to:', imageUrl);
       } else {
         console.error('❌ Image upload failed:', uploadResult.error);
       }
@@ -518,9 +535,7 @@ app.post('/api/process-content', async (req, res) => {
       processedContent = await analyzeResponse.json();
     }
     
-    // ============================================
     // URL PROCESSING WITH PREVIEW DATA
-    // ============================================
     else if (contentType === 'url') {
       console.log('🔗 Processing URL with preview data...');
       
@@ -531,7 +546,6 @@ app.post('/api/process-content', async (req, res) => {
       });
       const scrapedData = await scrapeResponse.json();
       
-      // Store rich preview data
       try {
         const urlObj = new URL(scrapedData.url);
         previewData = {
@@ -562,9 +576,7 @@ app.post('/api/process-content', async (req, res) => {
       processedContent = await analyzeResponse.json();
     }
     
-    // ============================================
     // TEXT PROCESSING WITH METADATA
-    // ============================================
     else {
       console.log('📝 Processing text with metadata...');
       
@@ -575,23 +587,20 @@ app.post('/api/process-content', async (req, res) => {
       });
       processedContent = await analyzeResponse.json();
       
-      // Add text metadata
       const words = content.trim().split(/\s+/).length;
       contentMetadata = {
         word_count: words,
         char_count: content.length,
-        estimated_read_time: Math.max(1, Math.ceil(words / 200)) // minutes
+        estimated_read_time: Math.max(1, Math.ceil(words / 200))
       };
     }
     
-    // ============================================
-    // SAVE TO DATABASE WITH ENHANCED DATA
-    // ============================================
-    console.log('💾 Saving to database with enhanced data...');
+    // SAVE TO DATABASE WITH AUTHENTICATED USER
+    console.log('💾 Saving to database for authenticated user...');
     const { data, error } = await supabase
       .from('saved_items')
       .insert({
-        user_id: userId,
+        user_id: userId, // From authenticated token
         title: processedContent.title,
         content_type: contentType,
         original_content: contentType === 'image' ? null : content,
@@ -615,7 +624,7 @@ app.post('/api/process-content', async (req, res) => {
       });
     }
 
-    console.log('✅ Successfully saved with enhanced features!');
+    console.log('✅ Successfully saved with enhanced security!');
     res.json({ success: true, data: data });
     
   } catch (error) {
@@ -627,50 +636,29 @@ app.post('/api/process-content', async (req, res) => {
   }
 });
 
-// Toggle completion endpoint - WITH USER AUTHENTICATION
-app.patch('/api/toggle-completion', async (req, res) => {
+// Toggle completion endpoint - SECURE
+app.patch('/api/toggle-completion', authenticateUser, async (req, res) => {
   try {
-    const { itemId, completed, userId } = req.body;
+    const { itemId, completed } = req.body;
+    const userId = req.userId; // From authenticated token
     
-    // Validate user ID
-    if (!isValidUserId(userId)) {
-      return res.status(400).json({ 
-        error: 'Invalid or missing user ID. Please sign in.' 
-      });
-    }
+    console.log('🔒 Securely toggling completion for item:', itemId, 'user:', userId);
     
-    console.log('Toggling completion for item:', itemId, 'to:', completed, 'for user:', userId);
-    
-    // First verify the item belongs to this user
-    const { data: existingItem, error: fetchError } = await supabase
-      .from('saved_items')
-      .select('user_id')
-      .eq('id', itemId)
-      .single();
-
-    if (fetchError || !existingItem) {
-      return res.status(404).json({ error: 'Item not found' });
-    }
-
-    if (existingItem.user_id !== userId) {
-      return res.status(403).json({ error: 'Access denied. This item belongs to another user.' });
-    }
-    
-    // Update the completion status
+    // Verify ownership and update
     const { data, error } = await supabase
       .from('saved_items')
       .update({ is_completed: completed })
       .eq('id', itemId)
-      .eq('user_id', userId) // Double-check user ownership
+      .eq('user_id', userId) // Ensure user can only modify their own items
       .select()
       .single();
 
     if (error) {
       console.error('Database error:', error);
-      throw error;
+      return res.status(404).json({ error: 'Item not found or access denied' });
     }
     
-    console.log('Successfully toggled completion for user:', userId);
+    console.log('✅ Successfully toggled completion securely');
     res.json({ success: true, data });
   } catch (error) {
     console.error('Toggle completion error:', error);
@@ -678,19 +666,13 @@ app.patch('/api/toggle-completion', async (req, res) => {
   }
 });
 
-// Delete item endpoint - WITH USER AUTHENTICATION
-app.delete('/api/delete-item', async (req, res) => {
+// Delete item endpoint - SECURE
+app.delete('/api/delete-item', authenticateUser, async (req, res) => {
   try {
-    const { itemId, userId } = req.body;
+    const { itemId } = req.body;
+    const userId = req.userId; // From authenticated token
     
-    // Validate user ID
-    if (!isValidUserId(userId)) {
-      return res.status(400).json({ 
-        error: 'Invalid or missing user ID. Please sign in.' 
-      });
-    }
-    
-    console.log('Deleting item:', itemId, 'for user:', userId);
+    console.log('🔒 Securely deleting item:', itemId, 'for user:', userId);
     
     // Verify ownership and delete
     const { data, error } = await supabase
@@ -702,13 +684,10 @@ app.delete('/api/delete-item', async (req, res) => {
       .single();
 
     if (error) {
-      if (error.code === 'PGRST116') {
-        return res.status(404).json({ error: 'Item not found or access denied' });
-      }
-      throw error;
+      return res.status(404).json({ error: 'Item not found or access denied' });
     }
     
-    console.log('Successfully deleted item for user:', userId);
+    console.log('✅ Successfully deleted item securely');
     res.json({ success: true, data });
     
   } catch (error) {
@@ -717,19 +696,12 @@ app.delete('/api/delete-item', async (req, res) => {
   }
 });
 
-// Get user stats endpoint
-app.get('/api/user-stats', async (req, res) => {
+// Get user stats endpoint - SECURE
+app.get('/api/user-stats', authenticateUser, async (req, res) => {
   try {
-    const { userId } = req.query;
+    const userId = req.userId; // From authenticated token
     
-    // Validate user ID
-    if (!isValidUserId(userId)) {
-      return res.status(400).json({ 
-        error: 'Invalid or missing user ID. Please sign in.' 
-      });
-    }
-    
-    console.log('Getting stats for user:', userId);
+    console.log('🔒 Getting stats for authenticated user:', userId);
     
     // Get total count
     const { data: totalData, error: totalError } = await supabase
@@ -754,7 +726,6 @@ app.get('/api/user-stats', async (req, res) => {
       throw new Error('Failed to fetch user stats');
     }
 
-    // Process category data
     const categoryBreakdown = categoryData.reduce((acc, item) => {
       const category = item.ai_category || 'Other';
       acc[category] = (acc[category] || 0) + 1;
@@ -769,7 +740,7 @@ app.get('/api/user-stats', async (req, res) => {
       categoryBreakdown
     };
     
-    console.log('User stats:', stats);
+    console.log('✅ User stats retrieved securely');
     res.json({ success: true, stats });
     
   } catch (error) {
@@ -778,26 +749,22 @@ app.get('/api/user-stats', async (req, res) => {
   }
 });
 
-// Get item with full details (for card detail view)
-app.get('/api/item/:itemId', async (req, res) => {
+// Get item with full details - SECURE
+app.get('/api/item/:itemId', authenticateUser, async (req, res) => {
   try {
     const { itemId } = req.params;
-    const { userId } = req.query;
-    
-    if (!isValidUserId(userId)) {
-      return res.status(400).json({ error: 'Invalid user ID' });
-    }
+    const userId = req.userId; // From authenticated token
     
     const { data, error } = await supabase
       .from('saved_items')
       .select('*')
       .eq('id', itemId)
-      .eq('user_id', userId)
+      .eq('user_id', userId) // Ensure user can only access their own items
       .single();
     
     if (error) {
       console.error('Fetch item error:', error);
-      return res.status(404).json({ error: 'Item not found' });
+      return res.status(404).json({ error: 'Item not found or access denied' });
     }
     
     // Increment view count
@@ -807,7 +774,8 @@ app.get('/api/item/:itemId', async (req, res) => {
         view_count: (data.view_count || 0) + 1,
         last_viewed_at: new Date().toISOString()
       })
-      .eq('id', itemId);
+      .eq('id', itemId)
+      .eq('user_id', userId);
     
     res.json({ success: true, data });
     
@@ -817,21 +785,11 @@ app.get('/api/item/:itemId', async (req, res) => {
   }
 });
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    message: 'DANGIT server running with enhanced features',
-    timestamp: new Date().toISOString(),
-    version: '2.2.0',
-    features: ['Enhanced AI Analysis', 'Image Storage', 'Link Previews', 'View Tracking']
-  });
-});
-
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 DANGIT Server v2.2.0 running on http://0.0.0.0:${PORT}`);
-  console.log('✨ Enhanced Features: Image Storage, Link Previews, View Tracking');
+  console.log(`🚀 DANGIT Server v2.3.0-SECURE running on http://0.0.0.0:${PORT}`);
+  console.log('🔒 SECURITY: All user endpoints now require authentication');
+  console.log('✨ Enhanced Features: Secure Auth, Image Storage, Link Previews, View Tracking');
   console.log('📊 AI Models: GPT-4o (vision), GPT-4o-mini (text)');
   console.log('🗂️ Storage: Supabase Storage for images');
 });
