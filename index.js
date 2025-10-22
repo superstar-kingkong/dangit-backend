@@ -665,6 +665,241 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// ============================================
+// PASTE THIS CODE BEFORE app.listen()
+// ============================================
+
+// Upload image to Supabase Storage
+app.post('/api/storage/upload-image', async (req, res) => {
+  try {
+    const { imageData, userId, fileName } = req.body;
+    
+    if (!isValidUserId(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+    
+    // Remove data URL prefix if present
+    const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+    
+    // Create unique filename
+    const uniqueFileName = `${userId}/${Date.now()}-${fileName || 'screenshot.png'}`;
+    
+    // Upload to Supabase Storage
+    const { data, error } = await supabase.storage
+      .from('saved-images')
+      .upload(uniqueFileName, buffer, {
+        contentType: 'image/png',
+        upsert: false
+      });
+    
+    if (error) {
+      console.error('Upload error:', error);
+      throw error;
+    }
+    
+    // Get public URL
+    const { data: urlData } = supabase.storage
+      .from('saved-images')
+      .getPublicUrl(uniqueFileName);
+    
+    res.json({ 
+      success: true, 
+      url: urlData.publicUrl,
+      path: uniqueFileName
+    });
+    
+  } catch (error) {
+    console.error('Image upload error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to upload image' 
+    });
+  }
+});
+
+// Enhanced process content with image storage
+app.post('/api/process-content-v2', async (req, res) => {
+  try {
+    const { content, contentType, userId } = req.body;
+    
+    if (!isValidUserId(userId)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid or missing user ID. Please sign in.' 
+      });
+    }
+    
+    console.log('Processing content v2:', { contentType, userId });
+    
+    let processedContent;
+    let imageUrl = null;
+    let previewData = null;
+    let contentMetadata = {};
+    const serverUrl = `http://localhost:${process.env.PORT || 3001}`;
+    
+    // IMAGE PROCESSING
+    if (contentType === 'image') {
+      console.log('Uploading image to storage...');
+      
+      // Upload image
+      const uploadResponse = await fetch(`${serverUrl}/api/storage/upload-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          imageData: content, 
+          userId,
+          fileName: `screenshot-${Date.now()}.png`
+        })
+      });
+      
+      const uploadResult = await uploadResponse.json();
+      
+      if (uploadResult.success) {
+        imageUrl = uploadResult.url;
+        contentMetadata = {
+          storage_path: uploadResult.path,
+          uploaded_at: new Date().toISOString()
+        };
+      }
+      
+      // Analyze image
+      const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, contentType: 'image' })
+      });
+      processedContent = await analyzeResponse.json();
+    }
+    
+    // URL PROCESSING
+    else if (contentType === 'url') {
+      console.log('Processing URL...');
+      
+      const scrapeResponse = await fetch(`${serverUrl}/api/scrape`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: content })
+      });
+      const scrapedData = await scrapeResponse.json();
+      
+      // Store preview data
+      const urlObj = new URL(scrapedData.url);
+      previewData = {
+        url: scrapedData.url,
+        domain: urlObj.hostname,
+        title: scrapedData.title,
+        description: scrapedData.description,
+        favicon: `https://www.google.com/s2/favicons?domain=${urlObj.hostname}&sz=64`
+      };
+      
+      const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: scrapedData, contentType: 'url' })
+      });
+      processedContent = await analyzeResponse.json();
+      
+      contentMetadata = { domain: urlObj.hostname };
+    }
+    
+    // TEXT PROCESSING
+    else {
+      console.log('Processing text...');
+      
+      const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, contentType: 'text' })
+      });
+      processedContent = await analyzeResponse.json();
+      
+      const words = content.trim().split(/\s+/).length;
+      contentMetadata = {
+        word_count: words,
+        char_count: content.length
+      };
+    }
+    
+    // SAVE TO DATABASE
+    console.log('Saving to database...');
+    const { data, error } = await supabase
+      .from('saved_items')
+      .insert({
+        user_id: userId,
+        title: processedContent.title,
+        content_type: contentType,
+        original_content: contentType === 'image' ? null : content,
+        original_image_url: imageUrl,
+        preview_data: previewData,
+        content_metadata: contentMetadata,
+        ai_summary: processedContent.summary,
+        ai_category: processedContent.category,
+        ai_tags: processedContent.tags,
+        is_completed: false,
+        view_count: 0
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Database error:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to save to database' 
+      });
+    }
+
+    console.log('✅ Successfully saved!');
+    res.json({ success: true, data: data });
+    
+  } catch (error) {
+    console.error('Process content v2 error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to process content' 
+    });
+  }
+});
+
+// Get item with full details (for card detail view)
+app.get('/api/item/:itemId', async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const { userId } = req.query;
+    
+    if (!isValidUserId(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+    
+    const { data, error } = await supabase
+      .from('saved_items')
+      .select('*')
+      .eq('id', itemId)
+      .eq('user_id', userId)
+      .single();
+    
+    if (error) {
+      console.error('Fetch item error:', error);
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    
+    // Increment view count
+    await supabase
+      .from('saved_items')
+      .update({ 
+        view_count: (data.view_count || 0) + 1,
+        last_viewed_at: new Date().toISOString()
+      })
+      .eq('id', itemId);
+    
+    res.json({ success: true, data });
+    
+  } catch (error) {
+    console.error('Get item error:', error);
+    res.status(500).json({ error: 'Failed to fetch item' });
+  }
+});
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 DANGIT Server v2.1.0 running on http://0.0.0.0:${PORT}`);
