@@ -714,27 +714,67 @@ app.patch('/api/toggle-completion', authenticateUser, async (req, res) => {
     
     console.log('🔒 Securely toggling completion for item:', itemId, 'user:', userId);
     
+    // ✅ Validate inputs
+    if (!itemId || typeof completed !== 'boolean') {
+      return res.status(400).json({ 
+        error: 'Invalid request: itemId and completed (boolean) are required' 
+      });
+    }
+    
+    // ✅ Ensure itemId is an integer (handle both number and string inputs)
+    const id = typeof itemId === 'number' ? itemId : parseInt(itemId, 10);
+    
+    if (isNaN(id)) {
+      return res.status(400).json({ 
+        error: 'Invalid itemId: must be a valid number' 
+      });
+    }
+    
+    console.log('🔍 Parsed itemId as integer:', id);
+    
     // Verify ownership and update
     const { data, error } = await supabase
       .from('saved_items')
-      .update({ is_completed: completed })
-      .eq('id', itemId)
+      .update({ 
+        is_completed: completed,
+        updated_at: new Date().toISOString() // ✅ Track when it was updated
+      })
+      .eq('id', id) // ✅ Use integer ID
       .eq('user_id', userId) // Ensure user can only modify their own items
       .select()
       .single();
 
     if (error) {
       console.error('Database error:', error);
-      return res.status(404).json({ error: 'Item not found or access denied' });
+      
+      // ✅ Better error handling
+      if (error.code === 'PGRST116') {
+        // No rows returned - item not found or user doesn't own it
+        return res.status(404).json({ 
+          error: 'Item not found or access denied',
+          details: 'Either the item does not exist or you do not have permission to modify it'
+        });
+      }
+      
+      // Other database errors
+      return res.status(500).json({ 
+        error: 'Database error occurred',
+        code: error.code 
+      });
     }
     
-    console.log('✅ Successfully toggled completion securely');
+    console.log('✅ Successfully toggled completion for item:', id, 'to:', completed);
     res.json({ success: true, data });
+    
   } catch (error) {
     console.error('Toggle completion error:', error);
-    res.status(500).json({ error: 'Failed to toggle completion' });
+    res.status(500).json({ 
+      error: 'Failed to toggle completion',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
   }
 });
+
 
 // Delete item endpoint - SECURE
 app.delete('/api/delete-item', authenticateUser, async (req, res) => {
