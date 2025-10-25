@@ -706,11 +706,11 @@ app.post('/api/process-content', authenticateUser, async (req, res) => {
   }
 });
 
-// Toggle completion endpoint - SECURE
+// Toggle completion endpoint - SECURE (handles UUID strings)
 app.patch('/api/toggle-completion', authenticateUser, async (req, res) => {
   try {
     const { itemId, completed } = req.body;
-    const userId = req.userId; // From authenticated token
+    const userId = req.userId;
     
     console.log('🔒 Securely toggling completion for item:', itemId, 'user:', userId);
     
@@ -721,49 +721,53 @@ app.patch('/api/toggle-completion', authenticateUser, async (req, res) => {
       });
     }
     
-    // ✅ Ensure itemId is an integer (handle both number and string inputs)
-    const id = typeof itemId === 'number' ? itemId : parseInt(itemId, 10);
+    // ✅ Convert to string (handles both UUID strings and numbers)
+    const itemIdString = String(itemId);
     
-    if (isNaN(id)) {
+    // ✅ Validate UUID format (your database uses UUIDs)
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    
+    if (!uuidRegex.test(itemIdString)) {
+      console.error('❌ Invalid UUID format received:', itemIdString);
       return res.status(400).json({ 
-        error: 'Invalid itemId: must be a valid number' 
+        error: 'Invalid itemId format: must be a valid UUID',
+        received: itemIdString,
+        hint: 'Expected format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
       });
     }
     
-    console.log('🔍 Parsed itemId as integer:', id);
+    console.log('✅ Valid UUID format:', itemIdString);
     
     // Verify ownership and update
     const { data, error } = await supabase
       .from('saved_items')
       .update({ 
         is_completed: completed,
-        updated_at: new Date().toISOString() // ✅ Track when it was updated
+        updated_at: new Date().toISOString()
       })
-      .eq('id', id) // ✅ Use integer ID
-      .eq('user_id', userId) // Ensure user can only modify their own items
+      .eq('id', itemIdString) // ✅ Use UUID string
+      .eq('user_id', userId)
       .select()
       .single();
 
     if (error) {
       console.error('Database error:', error);
       
-      // ✅ Better error handling
       if (error.code === 'PGRST116') {
-        // No rows returned - item not found or user doesn't own it
         return res.status(404).json({ 
           error: 'Item not found or access denied',
           details: 'Either the item does not exist or you do not have permission to modify it'
         });
       }
       
-      // Other database errors
       return res.status(500).json({ 
         error: 'Database error occurred',
-        code: error.code 
+        code: error.code,
+        message: error.message
       });
     }
     
-    console.log('✅ Successfully toggled completion for item:', id, 'to:', completed);
+    console.log('✅ Successfully toggled completion for UUID:', itemIdString, 'to:', completed);
     res.json({ success: true, data });
     
   } catch (error) {
@@ -774,6 +778,7 @@ app.patch('/api/toggle-completion', authenticateUser, async (req, res) => {
     });
   }
 });
+
 
 
 // Delete item endpoint - SECURE
