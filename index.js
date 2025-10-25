@@ -122,6 +122,76 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+
+// 🆕 ADD THIS NEW ENDPOINT HERE - URL Preview - SECURE
+app.get('/api/url-preview', async (req, res) => {
+  try {
+    const { url } = req.query;
+    
+    if (!url) {
+      return res.status(400).json({ success: false, error: 'URL is required' });
+    }
+    
+    console.log('🔒 Fetching URL preview for:', url);
+    
+    const fullUrl = url.startsWith('http') ? url : `https://${url}`;
+    
+    const response = await fetch(fullUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      },
+      timeout: 5000 // 5 second timeout
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    
+    const html = await response.text();
+    const $ = cheerio.load(html);
+    
+    // Extract Open Graph and meta tags
+    const preview = {
+      title: $('meta[property="og:title"]').attr('content') || 
+             $('meta[name="twitter:title"]').attr('content') || 
+             $('title').text() || 
+             'No title',
+      description: $('meta[property="og:description"]').attr('content') || 
+                  $('meta[name="twitter:description"]').attr('content') || 
+                  $('meta[name="description"]').attr('content') || 
+                  'No description available',
+      image: $('meta[property="og:image"]').attr('content') || 
+             $('meta[name="twitter:image"]').attr('content') || 
+             null,
+      siteName: $('meta[property="og:site_name"]').attr('content') || 
+                new URL(fullUrl).hostname,
+      url: fullUrl
+    };
+    
+    // Clean up text
+    preview.title = preview.title.trim().substring(0, 100);
+    preview.description = preview.description.trim().substring(0, 200);
+    
+    console.log('✅ URL preview fetched successfully');
+    res.json({ success: true, preview });
+    
+  } catch (error) {
+    console.error('URL preview error:', error.message);
+    
+    // Return basic fallback preview
+    res.json({ 
+      success: true, 
+      preview: {
+        title: 'Link Preview',
+        description: 'Preview not available for this link',
+        image: null,
+        siteName: new URL(req.query.url).hostname,
+        url: req.query.url
+      }
+    });
+  }
+});
+
 // AI Analysis endpoint (internal use only)
 app.post('/api/analyze', async (req, res) => {
   try {
@@ -782,74 +852,6 @@ app.get('/api/item/:itemId', authenticateUser, async (req, res) => {
   } catch (error) {
     console.error('Get item error:', error);
     res.status(500).json({ error: 'Failed to fetch item' });
-  }
-});
-// 🆕 ADD THIS NEW ENDPOINT HERE - URL Preview - SECURE
-app.get('/api/url-preview', authenticateUser, async (req, res) => {
-  try {
-    const { url } = req.query;
-    
-    if (!url) {
-      return res.status(400).json({ success: false, error: 'URL is required' });
-    }
-    
-    console.log('🔒 Fetching URL preview for:', url);
-    
-    const fullUrl = url.startsWith('http') ? url : `https://${url}`;
-    
-    const response = await fetch(fullUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      timeout: 5000 // 5 second timeout
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    
-    const html = await response.text();
-    const $ = cheerio.load(html);
-    
-    // Extract Open Graph and meta tags
-    const preview = {
-      title: $('meta[property="og:title"]').attr('content') || 
-             $('meta[name="twitter:title"]').attr('content') || 
-             $('title').text() || 
-             'No title',
-      description: $('meta[property="og:description"]').attr('content') || 
-                  $('meta[name="twitter:description"]').attr('content') || 
-                  $('meta[name="description"]').attr('content') || 
-                  'No description available',
-      image: $('meta[property="og:image"]').attr('content') || 
-             $('meta[name="twitter:image"]').attr('content') || 
-             null,
-      siteName: $('meta[property="og:site_name"]').attr('content') || 
-                new URL(fullUrl).hostname,
-      url: fullUrl
-    };
-    
-    // Clean up text
-    preview.title = preview.title.trim().substring(0, 100);
-    preview.description = preview.description.trim().substring(0, 200);
-    
-    console.log('✅ URL preview fetched successfully');
-    res.json({ success: true, preview });
-    
-  } catch (error) {
-    console.error('URL preview error:', error.message);
-    
-    // Return basic fallback preview
-    res.json({ 
-      success: true, 
-      preview: {
-        title: 'Link Preview',
-        description: 'Preview not available for this link',
-        image: null,
-        siteName: new URL(req.query.url).hostname,
-        url: req.query.url
-      }
-    });
   }
 });
 
