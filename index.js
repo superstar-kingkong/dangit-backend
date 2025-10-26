@@ -192,7 +192,6 @@ app.get('/api/url-preview', async (req, res) => {
   }
 });
 
-// AI Analysis endpoint (internal use only)
 app.post('/api/analyze', async (req, res) => {
   try {
     const { content, contentType } = req.body;
@@ -274,8 +273,26 @@ Return ONLY this JSON:
       analysisResult = cleanJSONResponse(rawResponse);
     }
 
-    // URL ANALYSIS - Deep & Contextual
+    // ✅ URL ANALYSIS - Instagram Aware (NO MORE HALLUCINATION!)
     else if (contentType === 'url') {
+      // 🎯 INSTAGRAM: Skip AI completely, return basic info
+      if (content.url && (content.url.includes('instagram.com') || content.url.includes('instagr.am'))) {
+        console.log('🎯 Instagram URL detected - using BASIC analysis (no AI hallucination)');
+        
+        const postMatch = content.url.match(/\/(p|reel)\/([A-Za-z0-9_-]+)/);
+        const postType = postMatch ? postMatch[1] : 'post';
+        
+        // ✅ Return simple, factual data - NO AI INVOLVED
+        return res.json({
+          title: postType === 'reel' ? 'Instagram Reel' : 'Instagram Post',
+          category: 'Entertainment',
+          summary: 'Content saved from Instagram. Open link to view.',
+          tags: ['instagram', postType === 'reel' ? 'reel' : 'post', 'social-media'],
+          content_type: postType === 'reel' ? 'video' : 'image'
+        });
+      }
+
+      // 🔄 REGULAR URLs: Use existing AI analysis (unchanged)
       const prompt = `Analyze this webpage and create a helpful, natural description.
 
 Title: ${content.title}
@@ -324,7 +341,7 @@ Return ONLY this JSON:
       analysisResult = cleanJSONResponse(rawResponse);
     }
 
-    // TEXT/NOTE ANALYSIS - Light Touch
+    // TEXT/NOTE ANALYSIS - Light Touch (unchanged)
     else if (contentType === 'text') {
       const prompt = `The user wrote this note. Help organize it WITHOUT over-analyzing.
 
@@ -374,7 +391,7 @@ Return ONLY this JSON:
       analysisResult = cleanJSONResponse(rawResponse);
     }
 
-    // Validation & cleanup
+    // Validation & cleanup (unchanged)
     if (!analysisResult.title || !analysisResult.category || !analysisResult.summary) {
       throw new Error('Invalid AI response format');
     }
@@ -418,6 +435,7 @@ Return ONLY this JSON:
     });
   }
 });
+
 
 // Scrape URL endpoint (internal use only)
 app.post('/api/scrape', async (req, res) => {
@@ -1002,7 +1020,7 @@ app.post('/api/scrape-instagram', authenticateUser, async (req, res) => {
   }
 });
 
-// ✅ UPDATED: Fix existing scrape endpoint to handle Instagram properly
+// ✅ FIXED: Scrape URL endpoint - NO MORE HALLUCINATION
 app.post('/api/scrape', async (req, res) => {
   try {
     const { url } = req.body;
@@ -1010,16 +1028,16 @@ app.post('/api/scrape', async (req, res) => {
     
     const fullUrl = url.startsWith('http') ? url : `https://${url}`;
     
-    // ✅ FIXED: Instagram detection with proper response
+    // ✅ INSTAGRAM: Return MINIMAL data to prevent AI hallucination
     if (fullUrl.includes('instagram.com') || fullUrl.includes('instagr.am')) {
-      console.log('Instagram URL detected - using basic fallback');
+      console.log('🎯 Instagram URL detected - using BASIC response');
       
       const postMatch = fullUrl.match(/\/(p|reel)\/([A-Za-z0-9_-]+)/);
       const postType = postMatch ? postMatch[1] : 'post';
       
       return res.json({
         title: postType === 'reel' ? 'Instagram Reel' : 'Instagram Post',
-        description: `Content saved from Instagram`,
+        description: 'Saved from Instagram', // ✅ SIMPLE, no details for AI to hallucinate
         url: fullUrl
       });
     }
@@ -1040,8 +1058,7 @@ app.post('/api/scrape', async (req, res) => {
     
     const result = {
       title: $('title').text()?.trim()?.substring(0, 100) || 'Untitled',
-      description: $('meta[name="description"]').attr('content')?.trim()?.substring(0, 300) || 
-                  $('meta[property="og:description"]').attr('content')?.trim()?.substring(0, 300) || 'No description',
+      description: $('meta[name="description"]').attr('content')?.trim()?.substring(0, 300) || 'No description',
       url: response.url
     };
     
