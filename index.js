@@ -122,8 +122,89 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// ✅ NEW: Instagram scraper - NO AUTH (so /api/analyze can use it)
+app.post('/api/scrape-instagram', async (req, res) => {
+  try {
+    const { url } = req.body;
+    console.log('🎯 Instagram URL received:', url);
+    
+    // Validate
+    const isInstagram = url.includes('instagram.com') || url.includes('instagr.am');
+    if (!isInstagram) {
+      return res.status(400).json({ error: 'Not an Instagram URL' });
+    }
+    
+    // Extract post type and ID
+    const postMatch = url.match(/\/(p|reel|reels)\/([A-Za-z0-9_-]+)/);
+    const postType = postMatch ? postMatch[1] : 'post';
+    const postId = postMatch ? postMatch[2] : null;
+    
+    console.log(`📸 Instagram ${postType} detected:`, postId);
+    
+    // Try oEmbed API (Instagram's official public API)
+    try {
+      const oembedUrl = `https://graph.instagram.com/oembed?url=${encodeURIComponent(url)}&omitscript=true`;
+      const oembedResponse = await fetch(oembedUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; Dangit/1.0)'
+        }
+      });
+      
+      if (oembedResponse.ok) {
+        const oembedData = await oembedResponse.json();
+        console.log('✅ oEmbed success!');
+        
+        // Extract actual content from title
+        let cleanTitle = oembedData.title || '';
+        
+        // Remove " on Instagram: " and Instagram branding
+        cleanTitle = cleanTitle.replace(/^.*? on Instagram: "?/, '');
+        cleanTitle = cleanTitle.replace(/"$/, '');
+        cleanTitle = cleanTitle.replace(/Instagram$/, '').trim();
+        
+        // If still too generic, use author + type
+        if (!cleanTitle || cleanTitle.length < 10 || cleanTitle === 'Instagram') {
+          cleanTitle = `${oembedData.author_name}'s ${postType === 'reel' ? 'Reel' : 'Post'}`;
+        }
+        
+        return res.json({
+          title: cleanTitle,
+          description: cleanTitle, // Use same for description
+          url: url,
+          thumbnail: oembedData.thumbnail_url,
+          author: oembedData.author_name,
+          type: 'instagram',
+          postType: postType,
+          postId: postId
+        });
+      }
+    } catch (oembedError) {
+      console.log('oEmbed failed:', oembedError.message);
+    }
+    
+    // Fallback: Generic but clear
+    return res.json({
+      title: postType === 'reel' ? 'Instagram Reel' : 'Instagram Post',
+      description: `${postType === 'reel' ? 'Video' : 'Photo'} content from Instagram`,
+      url: url,
+      thumbnail: 'https://www.instagram.com/static/images/ico/favicon-192.png/68d99ba29cc8.png',
+      type: 'instagram',
+      postType: postType,
+      postId: postId
+    });
+    
+  } catch (error) {
+    console.error('Instagram error:', error);
+    res.json({
+      title: 'Instagram Content',
+      description: 'Saved from Instagram',
+      url: req.body.url,
+      type: 'instagram'
+    });
+  }
+});
 
-// 🆕 ADD THIS NEW ENDPOINT HERE - URL Preview - SECURE
+// URL Preview endpoint
 app.get('/api/url-preview', async (req, res) => {
   try {
     const { url } = req.query;
@@ -192,6 +273,7 @@ app.get('/api/url-preview', async (req, res) => {
   }
 });
 
+// AI Analysis endpoint (internal use only)
 app.post('/api/analyze', async (req, res) => {
   try {
     const { content, contentType } = req.body;
@@ -273,26 +355,45 @@ Return ONLY this JSON:
       analysisResult = cleanJSONResponse(rawResponse);
     }
 
-    // ✅ URL ANALYSIS - Instagram Aware (NO MORE HALLUCINATION!)
+    // ✅ UPDATED: URL ANALYSIS - Instagram Aware
     else if (contentType === 'url') {
-      // 🎯 INSTAGRAM: Skip AI completely, return basic info
+      // Check if Instagram
       if (content.url && (content.url.includes('instagram.com') || content.url.includes('instagr.am'))) {
-        console.log('🎯 Instagram URL detected - using BASIC analysis (no AI hallucination)');
+        console.log('🎯 Instagram URL detected');
         
-        const postMatch = content.url.match(/\/(p|reel)\/([A-Za-z0-9_-]+)/);
+        // Use the scraped data we already have
+        const postMatch = content.url.match(/\/(p|reel|reels)\/([A-Za-z0-9_-]+)/);
         const postType = postMatch ? postMatch[1] : 'post';
         
-        // ✅ Return simple, factual data - NO AI INVOLVED
-        return res.json({
-          title: postType === 'reel' ? 'Instagram Reel' : 'Instagram Post',
+        // Take the title/description from scraping
+        let title = content.title || '';
+        let description = content.description || '';
+        
+        // Clean up Instagram's default branding
+        if (title === 'Instagram' || title.includes('Instagram:')) {
+          title = title.replace(/^.*? on Instagram: "?/, '').replace(/"$/, '').trim();
+        }
+        
+        // If still generic, make it simple but informative
+        if (!title || title.length < 10) {
+          title = postType === 'reel' ? 'Instagram Reel' : 'Instagram Post';
+          description = content.author ? `Content by ${content.author}` : 'Saved from Instagram';
+        }
+        
+        // Return without AI analysis (AI hallucinates on Instagram)
+        analysisResult = {
+          title: title.substring(0, 60),
           category: 'Entertainment',
-          summary: 'Content saved from Instagram. Open link to view.',
-          tags: ['instagram', postType === 'reel' ? 'reel' : 'post', 'social-media'],
-          content_type: postType === 'reel' ? 'video' : 'image'
-        });
+          summary: description || 'Instagram content saved for later viewing',
+          tags: ['instagram', postType === 'reel' ? 'video' : 'photo', 'social-media'],
+          content_type: postType === 'reel' ? 'video' : 'photo',
+          platform: 'instagram'
+        };
+        
+        return res.json(analysisResult);
       }
-
-      // 🔄 REGULAR URLs: Use existing AI analysis (unchanged)
+      
+      // Regular URL analysis
       const prompt = `Analyze this webpage and create a helpful, natural description.
 
 Title: ${content.title}
@@ -341,7 +442,7 @@ Return ONLY this JSON:
       analysisResult = cleanJSONResponse(rawResponse);
     }
 
-    // TEXT/NOTE ANALYSIS - Light Touch (unchanged)
+    // TEXT/NOTE ANALYSIS - Light Touch
     else if (contentType === 'text') {
       const prompt = `The user wrote this note. Help organize it WITHOUT over-analyzing.
 
@@ -391,7 +492,7 @@ Return ONLY this JSON:
       analysisResult = cleanJSONResponse(rawResponse);
     }
 
-    // Validation & cleanup (unchanged)
+    // Validation & cleanup
     if (!analysisResult.title || !analysisResult.category || !analysisResult.summary) {
       throw new Error('Invalid AI response format');
     }
@@ -436,8 +537,7 @@ Return ONLY this JSON:
   }
 });
 
-
-// Scrape URL endpoint (internal use only)
+// ✅ UPDATED: Scrape URL endpoint with Instagram handling
 app.post('/api/scrape', async (req, res) => {
   try {
     const { url } = req.body;
@@ -445,6 +545,25 @@ app.post('/api/scrape', async (req, res) => {
     
     const fullUrl = url.startsWith('http') ? url : `https://${url}`;
     
+    // Instagram: Call the dedicated scraper
+    if (fullUrl.includes('instagram.com') || fullUrl.includes('instagr.am')) {
+      console.log('🎯 Instagram detected - using dedicated scraper');
+      
+      const serverUrl = process.env.NODE_ENV === 'production' 
+        ? 'https://dangit-backend.onrender.com' 
+        : `http://localhost:${PORT}`;
+      
+      const instagramResponse = await fetch(`${serverUrl}/api/scrape-instagram`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: fullUrl })
+      });
+      
+      const instagramData = await instagramResponse.json();
+      return res.json(instagramData);
+    }
+    
+    // Regular URL scraping
     const response = await fetch(fullUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -797,8 +916,6 @@ app.patch('/api/toggle-completion', authenticateUser, async (req, res) => {
   }
 });
 
-
-
 // Delete item endpoint - SECURE
 app.delete('/api/delete-item', authenticateUser, async (req, res) => {
   try {
@@ -915,163 +1032,6 @@ app.get('/api/item/:itemId', authenticateUser, async (req, res) => {
   } catch (error) {
     console.error('Get item error:', error);
     res.status(500).json({ error: 'Failed to fetch item' });
-  }
-});
-
-
-// ✅ FIXED: Instagram link detection and scraping
-app.post('/api/scrape-instagram', authenticateUser, async (req, res) => {
-  try {
-    const { url } = req.body;
-    const userId = req.userId; // From auth token
-    
-    console.log('🎯 Scraping Instagram URL for user:', userId);
-    
-    // Validate Instagram URL
-    const isInstagram = url.includes('instagram.com') || url.includes('instagr.am');
-    if (!isInstagram) {
-      return res.status(400).json({ error: 'Not an Instagram URL' });
-    }
-    
-    // Extract post ID from URL
-    const postIdMatch = url.match(/\/(p|reel)\/([A-Za-z0-9_-]+)/);
-    if (!postIdMatch) {
-      return res.status(400).json({ error: 'Invalid Instagram post URL' });
-    }
-    
-    const postType = postIdMatch[1]; // 'p' or 'reel'
-    const postId = postIdMatch[2];
-    
-    console.log(`📸 Detected Instagram ${postType}:`, postId);
-    
-    // Method 1: Try basic scraping first (faster)
-    try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.5',
-          'Accept-Encoding': 'gzip, deflate',
-          'Cache-Control': 'no-cache'
-        },
-        timeout: 10000
-      });
-      
-      if (response.ok) {
-        const html = await response.text();
-        
-        // Look for JSON data in script tags
-        const jsonMatch = html.match(/"display_url":"([^"]+)"/);
-        const titleMatch = html.match(/<title>([^<]+)<\/title>/);
-        
-        if (titleMatch || jsonMatch) {
-          return res.json({
-            title: postType === 'reel' ? 'Instagram Reel' : 'Instagram Post',
-            description: `Saved ${postType} from Instagram`,
-            url: url,
-            thumbnail: jsonMatch ? jsonMatch[1].replace(/\\u0026/g, '&') : null,
-            type: 'instagram',
-            postType: postType,
-            postId: postId,
-            success: true
-          });
-        }
-      }
-    } catch (scrapeError) {
-      console.log('Direct scraping failed:', scrapeError.message);
-    }
-    
-    // Method 2: Fallback with better titles
-    const titles = {
-      'reel': [
-        'Instagram Reel Content',
-        'Creative Instagram Reel', 
-        'Trending Instagram Reel',
-        'Instagram Video Content'
-      ],
-      'p': [
-        'Instagram Photo Post',
-        'Instagram Content',
-        'Shared Instagram Post'
-      ]
-    };
-    
-    const randomTitle = titles[postType][Math.floor(Math.random() * titles[postType].length)];
-    
-    return res.json({
-      title: randomTitle,
-      description: `${postType === 'reel' ? 'Video' : 'Photo'} content saved from Instagram`,
-      url: url,
-      thumbnail: null,
-      type: 'instagram',
-      postType: postType,
-      postId: postId,
-      success: true,
-      note: 'Preview limited - Instagram restricts external access'
-    });
-    
-  } catch (error) {
-    console.error('Instagram scrape error:', error);
-    res.status(500).json({
-      error: 'Failed to process Instagram link',
-      url: req.body.url,
-      success: false
-    });
-  }
-});
-
-// ✅ FIXED: Scrape URL endpoint - NO MORE HALLUCINATION
-app.post('/api/scrape', async (req, res) => {
-  try {
-    const { url } = req.body;
-    console.log('Scraping URL:', url);
-    
-    const fullUrl = url.startsWith('http') ? url : `https://${url}`;
-    
-    // ✅ INSTAGRAM: Return MINIMAL data to prevent AI hallucination
-    if (fullUrl.includes('instagram.com') || fullUrl.includes('instagr.am')) {
-      console.log('🎯 Instagram URL detected - using BASIC response');
-      
-      const postMatch = fullUrl.match(/\/(p|reel)\/([A-Za-z0-9_-]+)/);
-      const postType = postMatch ? postMatch[1] : 'post';
-      
-      return res.json({
-        title: postType === 'reel' ? 'Instagram Reel' : 'Instagram Post',
-        description: 'Saved from Instagram', // ✅ SIMPLE, no details for AI to hallucinate
-        url: fullUrl
-      });
-    }
-    
-    // Regular scraping for other URLs
-    const response = await fetch(fullUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    
-    const html = await response.text();
-    const $ = cheerio.load(html);
-    
-    const result = {
-      title: $('title').text()?.trim()?.substring(0, 100) || 'Untitled',
-      description: $('meta[name="description"]').attr('content')?.trim()?.substring(0, 300) || 'No description',
-      url: response.url
-    };
-    
-    console.log('Scraped successfully:', result);
-    res.json(result);
-    
-  } catch (error) {
-    console.error('Scraping error:', error.message);
-    res.json({
-      title: 'Saved Link',
-      description: `Link saved: ${req.body.url}`,
-      url: req.body.url
-    });
   }
 });
 
