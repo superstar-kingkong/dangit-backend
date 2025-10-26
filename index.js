@@ -900,6 +900,208 @@ app.get('/api/item/:itemId', authenticateUser, async (req, res) => {
   }
 });
 
+
+// Instagram link detection and scraping
+app.post('/api/scrape-instagram', async (req, res) => {
+  try {
+    const { url } = req.body;
+    console.log('Scraping Instagram URL:', url);
+    
+    // Validate Instagram URL
+    const isInstagram = url.includes('instagram.com') || url.includes('instagr.am');
+    if (!isInstagram) {
+      return res.status(400).json({ error: 'Not an Instagram URL' });
+    }
+    
+    // Extract post ID from URL
+    // URLs like: https://www.instagram.com/p/ABC123/ or https://www.instagram.com/reel/XYZ789/
+    const postIdMatch = url.match(/\/(p|reel)\/([A-Za-z0-9_-]+)/);
+    if (!postIdMatch) {
+      return res.status(400).json({ error: 'Invalid Instagram post URL' });
+    }
+    
+    const postId = postIdMatch[2];
+    
+    // Method 1: Try oEmbed API (Instagram's official public API - no auth needed!)
+    try {
+      const oembedUrl = `https://graph.instagram.com/oembed?url=${encodeURIComponent(url)}`;
+      const oembedResponse = await fetch(oembedUrl);
+      
+      if (oembedResponse.ok) {
+        const oembedData = await oembedResponse.json();
+        
+        // oEmbed returns: title, author_name, thumbnail_url, html
+        return res.json({
+          title: oembedData.title || 'Instagram Post',
+          description: `Post by ${oembedData.author_name}`,
+          url: url,
+          thumbnail: oembedData.thumbnail_url,
+          author: oembedData.author_name,
+          type: 'instagram',
+          postId: postId
+        });
+      }
+    } catch (oembedError) {
+      console.log('oEmbed failed, trying alternative method:', oembedError.message);
+    }
+    
+    // Method 2: Fallback - Basic scraping (Instagram blocks this often, but worth trying)
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1'
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
+      const html = await response.text();
+      const $ = cheerio.load(html);
+      
+      // Try to extract meta tags
+      const ogTitle = $('meta[property="og:title"]').attr('content');
+      const ogDescription = $('meta[property="og:description"]').attr('content');
+      const ogImage = $('meta[property="og:image"]').attr('content');
+      
+      return res.json({
+        title: ogTitle || 'Instagram Post',
+        description: ogDescription || 'Saved from Instagram',
+        url: url,
+        thumbnail: ogImage,
+        type: 'instagram',
+        postId: postId
+      });
+      
+    } catch (scrapeError) {
+      console.log('Scraping failed:', scrapeError.message);
+    }
+    
+    // Method 3: Ultimate fallback - just save the link with basic info
+    return res.json({
+      title: 'Instagram Post',
+      description: `Instagram content saved from ${url}`,
+      url: url,
+      thumbnail: null,
+      type: 'instagram',
+      postId: postId,
+      note: 'Limited preview available - open link to view full content'
+    });
+    
+  } catch (error) {
+    console.error('Instagram scrape error:', error);
+    res.status(500).json({
+      error: 'Failed to process Instagram link',
+      url: req.body.url,
+      fallback: true
+    });
+  }
+});
+
+// Enhanced URL detection - auto-detect Instagram in process-content
+app.post('/api/process-content-v2-enhanced', async (req, res) => {
+  try {
+    const { content, contentType, userId } = req.body;
+    
+    if (!isValidUserId(userId)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid or missing user ID. Please sign in.' 
+      });
+    }
+    
+    let processedContent;
+    let imageUrl = null;
+    let previewData = null;
+    let contentMetadata = {};
+    const serverUrl = `http://localhost:${process.env.PORT || 3001}`;
+    
+    // Auto-detect Instagram URLs
+    if (contentType === 'url' && (content.includes('instagram.com') || content.includes('instagr.am'))) {
+      console.log('🎯 Instagram link detected!');
+      
+      // Use Instagram scraper
+      const instagramResponse = await fetch(`${serverUrl}/api/scrape-instagram`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: content })
+      });
+      const instagramData = await instagramResponse.json();
+      
+      previewData = {
+        url: instagramData.url,
+        domain: 'instagram.com',
+        title: instagramData.title,
+        description: instagramData.description,
+        thumbnail: instagramData.thumbnail,
+        author: instagramData.author,
+        favicon: 'https://www.instagram.com/static/images/ico/favicon-192.png/68d99ba29cc8.png',
+        type: 'instagram'
+      };
+      
+      // Analyze with AI
+      const analyzeResponse = await fetch(`${serverUrl}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          content: instagramData, 
+          contentType: 'url' 
+        })
+      });
+      processedContent = await analyzeResponse.json();
+      
+      contentMetadata = {
+        platform: 'instagram',
+        post_id: instagramData.postId,
+        author: instagramData.author
+      };
+      
+    } else {
+      // Use your existing logic for other content types
+      // ... (keep your existing process-content-v2 code here)
+    }
+    
+    // Save to database
+    console.log('Saving Instagram content to database...');
+    const { data, error } = await supabase
+      .from('saved_items')
+      .insert({
+        user_id: userId,
+        title: processedContent.title,
+        content_type: contentType,
+        original_content: content,
+        original_image_url: imageUrl,
+        preview_data: previewData,
+        content_metadata: contentMetadata,
+        ai_summary: processedContent.summary,
+        ai_category: processedContent.category,
+        ai_tags: processedContent.tags,
+        is_completed: false,
+        view_count: 0
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Database error:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to save to database' 
+      });
+    }
+
+    console.log('✅ Instagram content saved successfully!');
+    res.json({ success: true, data: data });
+    
+  } catch (error) {
+    console.error('Process content error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to process content' 
+    });
+  }
+});
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 DANGIT Server v2.3.0-SECURE running on http://0.0.0.0:${PORT}`);
