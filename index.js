@@ -1000,7 +1000,7 @@ app.post('/api/scrape-instagram', async (req, res) => {
 });
 
 // Enhanced URL detection - auto-detect Instagram in process-content
-app.post('/api/process-content-v2-enhanced', async (req, res) => {
+app.post('/api/process-content-v2', async (req, res) => {
   try {
     const { content, contentType, userId } = req.body;
     
@@ -1015,7 +1015,9 @@ app.post('/api/process-content-v2-enhanced', async (req, res) => {
     let imageUrl = null;
     let previewData = null;
     let contentMetadata = {};
-    const serverUrl = `http://localhost:${process.env.PORT || 3001}`;
+    const serverUrl = process.env.NODE_ENV === 'production' 
+      ? 'https://dangit-backend.onrender.com'
+      : `http://localhost:${process.env.PORT || 3001}`;
     
     // Auto-detect Instagram URLs
     if (contentType === 'url' && (content.includes('instagram.com') || content.includes('instagr.am'))) {
