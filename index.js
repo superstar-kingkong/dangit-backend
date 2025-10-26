@@ -916,6 +916,80 @@ app.patch('/api/toggle-completion', authenticateUser, async (req, res) => {
   }
 });
 
+// ✅ NEW: Update title endpoint - SECURE
+app.patch('/api/update-title', authenticateUser, async (req, res) => {
+  try {
+    const { itemId, title } = req.body;
+    const userId = req.userId; // From authenticated token
+    
+    console.log('🔒 Securely updating title for item:', itemId, 'user:', userId);
+    
+    // ✅ Validate inputs
+    if (!itemId) {
+      return res.status(400).json({ error: 'itemId is required' });
+    }
+    
+    if (!title || title.length === 0) {
+      return res.status(400).json({ error: 'Title cannot be empty' });
+    }
+    
+    if (title.length > 100) {
+      return res.status(400).json({ error: 'Title too long (max 100 characters)' });
+    }
+    
+    // ✅ Convert to string and validate UUID format
+    const itemIdString = String(itemId);
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    
+    if (!uuidRegex.test(itemIdString)) {
+      console.error('❌ Invalid UUID format received:', itemIdString);
+      return res.status(400).json({ 
+        error: 'Invalid itemId format: must be a valid UUID',
+        received: itemIdString
+      });
+    }
+    
+    // ✅ Update title with ownership verification
+    const { data, error } = await supabase
+      .from('saved_items')
+      .update({ 
+        title: title.trim().substring(0, 100), // Sanitize and limit length
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', itemIdString)
+      .eq('user_id', userId) // Ensure user can only update their own items
+      .select()
+      .single();
+    
+    if (error) {
+      console.error('Database error:', error);
+      
+      if (error.code === 'PGRST116') {
+        return res.status(404).json({ 
+          error: 'Item not found or access denied',
+          details: 'Either the item does not exist or you do not have permission to modify it'
+        });
+      }
+      
+      return res.status(500).json({ 
+        error: 'Database error occurred',
+        code: error.code,
+        message: error.message
+      });
+    }
+    
+    console.log('✅ Successfully updated title for UUID:', itemIdString);
+    res.json({ success: true, data });
+    
+  } catch (error) {
+    console.error('Update title error:', error);
+    res.status(500).json({ 
+      error: 'Failed to update title',
+      message: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
 // Delete item endpoint - SECURE
 app.delete('/api/delete-item', authenticateUser, async (req, res) => {
   try {
@@ -1039,7 +1113,7 @@ app.get('/api/item/:itemId', authenticateUser, async (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 DANGIT Server v2.3.0-SECURE running on http://0.0.0.0:${PORT}`);
   console.log('🔒 SECURITY: All user endpoints now require authentication');
-  console.log('✨ Enhanced Features: Secure Auth, Image Storage, Link Previews, View Tracking');
+  console.log('✨ Enhanced Features: Secure Auth, Image Storage, Link Previews, View Tracking, Title Updates');
   console.log('📊 AI Models: GPT-4o (vision), GPT-4o-mini (text)');
   console.log('🗂️ Storage: Supabase Storage for images');
 });
