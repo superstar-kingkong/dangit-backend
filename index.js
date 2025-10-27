@@ -117,8 +117,8 @@ app.get('/api/health', (req, res) => {
     status: 'OK', 
     message: 'DANGIT server running with SECURE authentication',
     timestamp: new Date().toISOString(),
-    version: '2.3.0-SECURE',
-    features: ['🔒 Secure Auth', 'Enhanced AI Analysis', 'Image Storage', 'Link Previews', 'View Tracking']
+    version: '2.4.0-SECURE+FEEDBACK',
+    features: ['🔒 Secure Auth', 'Enhanced AI Analysis', 'Image Storage', 'Link Previews', 'View Tracking', '💬 Feedback System']
   });
 });
 
@@ -1109,11 +1109,296 @@ app.get('/api/item/:itemId', authenticateUser, async (req, res) => {
   }
 });
 
+// ============================================
+// 💬 FEEDBACK & FEATURE VOTING ENDPOINTS - SECURE
+// ============================================
+
+// ✅ NEW: Get feedback (admin only - for you to view feedback)
+app.get('/api/feedback', authenticateUser, async (req, res) => {
+  try {
+    const userId = req.userId;
+    
+    // Only allow admin (your email) to view all feedback
+    const adminEmails = ['itskaushik06@gmail.com', 'kaushikbaira@gmail.com'];
+    if (!adminEmails.includes(userId)) {
+      return res.status(403).json({ error: 'Access denied. Admin only.' });
+    }
+    
+    console.log('🔒 Admin accessing all feedback:', userId);
+    
+    const { data, error } = await supabase
+      .from('user_feedback')
+      .select('*')
+      .order('created_at', { ascending: false });
+    
+    if (error) {
+      console.error('Feedback fetch error:', error);
+      return res.status(500).json({ error: 'Failed to fetch feedback' });
+    }
+    
+    console.log(`✅ Retrieved ${data.length} feedback entries for admin`);
+    res.json({ success: true, data });
+    
+  } catch (error) {
+    console.error('Get feedback error:', error);
+    res.status(500).json({ error: 'Failed to get feedback' });
+  }
+});
+
+// ✅ NEW: Submit feedback - SECURE
+app.post('/api/feedback', authenticateUser, async (req, res) => {
+  try {
+    const { feedback_type, rating, message, category } = req.body;
+    const userId = req.userId; // From authenticated token
+    
+    console.log('💬 User submitting feedback:', userId, 'type:', feedback_type);
+    
+    // Validate inputs
+    if (!feedback_type || !['rating', 'feature_request', 'bug_report', 'general'].includes(feedback_type)) {
+      return res.status(400).json({ error: 'Invalid feedback type' });
+    }
+    
+    if (feedback_type === 'rating' && (!rating || rating < 1 || rating > 5)) {
+      return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+    }
+    
+    if (message && message.length > 1000) {
+      return res.status(400).json({ error: 'Message too long (max 1000 characters)' });
+    }
+    
+    // Insert feedback
+    const { data, error } = await supabase
+      .from('user_feedback')
+      .insert({
+        user_id: userId,
+        feedback_type,
+        rating: feedback_type === 'rating' ? rating : null,
+        message: message?.trim() || null,
+        category: category || 'general',
+        status: 'new'
+      })
+      .select()
+      .single();
+    
+    if (error) {
+      console.error('Feedback insert error:', error);
+      return res.status(500).json({ error: 'Failed to save feedback' });
+    }
+    
+    console.log('✅ Feedback saved successfully');
+    res.json({ success: true, data });
+    
+  } catch (error) {
+    console.error('Submit feedback error:', error);
+    res.status(500).json({ error: 'Failed to submit feedback' });
+  }
+});
+
+// ✅ NEW: Get features for voting - SECURE
+app.get('/api/features', authenticateUser, async (req, res) => {
+  try {
+    const userId = req.userId;
+    
+    console.log('🔒 Getting features for user:', userId);
+    
+    // Get all features with vote counts
+    const { data, error } = await supabase
+      .from('feature_votes')
+      .select(`
+        *,
+        user_votes!inner(vote_type)
+      `)
+      .order('votes_count', { ascending: false });
+    
+    if (error) {
+      console.error('Features fetch error:', error);
+      // If no features exist yet, return empty array
+      if (error.code === 'PGRST116') {
+        return res.json({ success: true, data: [] });
+      }
+      return res.status(500).json({ error: 'Failed to fetch features' });
+    }
+    
+    console.log(`✅ Retrieved ${data?.length || 0} features`);
+    res.json({ success: true, data: data || [] });
+    
+  } catch (error) {
+    console.error('Get features error:', error);
+    res.status(500).json({ error: 'Failed to get features' });
+  }
+});
+
+// ✅ NEW: Submit feature suggestion - SECURE
+app.post('/api/features', authenticateUser, async (req, res) => {
+  try {
+    const { title, description } = req.body;
+    const userId = req.userId;
+    
+    console.log('💡 User suggesting feature:', userId, 'title:', title);
+    
+    // Validate inputs
+    if (!title || title.trim().length === 0) {
+      return res.status(400).json({ error: 'Feature title is required' });
+    }
+    
+    if (title.length > 100) {
+      return res.status(400).json({ error: 'Title too long (max 100 characters)' });
+    }
+    
+    if (description && description.length > 500) {
+      return res.status(400).json({ error: 'Description too long (max 500 characters)' });
+    }
+    
+    // Check if feature already exists (prevent duplicates)
+    const { data: existing } = await supabase
+      .from('feature_votes')
+      .select('id')
+      .ilike('feature_title', `%${title.trim()}%`)
+      .limit(1);
+    
+    if (existing && existing.length > 0) {
+      return res.status(409).json({ error: 'Similar feature suggestion already exists' });
+    }
+    
+    // Insert new feature
+    const { data, error } = await supabase
+      .from('feature_votes')
+      .insert({
+        user_id: userId,
+        feature_title: title.trim(),
+        feature_description: description?.trim() || null,
+        votes_count: 1,
+        status: 'suggested',
+        category: 'other'
+      })
+      .select()
+      .single();
+    
+    if (error) {
+      console.error('Feature insert error:', error);
+      return res.status(500).json({ error: 'Failed to save feature suggestion' });
+    }
+    
+    // Also add the user's vote
+    await supabase
+      .from('user_votes')
+      .insert({
+        user_id: userId,
+        feature_id: data.id,
+        vote_type: 'upvote'
+      });
+    
+    console.log('✅ Feature suggestion saved successfully');
+    res.json({ success: true, data });
+    
+  } catch (error) {
+    console.error('Submit feature error:', error);
+    res.status(500).json({ error: 'Failed to submit feature suggestion' });
+  }
+});
+
+// ✅ NEW: Vote on feature - SECURE
+app.post('/api/features/vote', authenticateUser, async (req, res) => {
+  try {
+    const { feature_id, vote_type } = req.body;
+    const userId = req.userId;
+    
+    console.log('🗳️ User voting:', userId, 'feature:', feature_id, 'vote:', vote_type);
+    
+    // Validate inputs
+    if (!feature_id) {
+      return res.status(400).json({ error: 'feature_id is required' });
+    }
+    
+    if (!vote_type || !['upvote', 'downvote'].includes(vote_type)) {
+      return res.status(400).json({ error: 'vote_type must be upvote or downvote' });
+    }
+    
+    // Check if user already voted on this feature
+    const { data: existingVote } = await supabase
+      .from('user_votes')
+      .select('vote_type')
+      .eq('user_id', userId)
+      .eq('feature_id', feature_id)
+      .single();
+    
+    let voteChange = 0;
+    
+    if (existingVote) {
+      // User already voted
+      if (existingVote.vote_type === vote_type) {
+        // Same vote - remove it (toggle off)
+        await supabase
+          .from('user_votes')
+          .delete()
+          .eq('user_id', userId)
+          .eq('feature_id', feature_id);
+        
+        voteChange = vote_type === 'upvote' ? -1 : 1;
+      } else {
+        // Different vote - update it
+        await supabase
+          .from('user_votes')
+          .update({ vote_type })
+          .eq('user_id', userId)
+          .eq('feature_id', feature_id);
+        
+        voteChange = vote_type === 'upvote' ? 2 : -2;
+      }
+    } else {
+      // New vote
+      await supabase
+        .from('user_votes')
+        .insert({
+          user_id: userId,
+          feature_id: feature_id,
+          vote_type: vote_type
+        });
+      
+      voteChange = vote_type === 'upvote' ? 1 : -1;
+    }
+    
+    // Update the feature vote count
+    const { data, error } = await supabase
+      .rpc('increment_votes', {
+        feature_id: feature_id,
+        increment_by: voteChange
+      });
+    
+    if (error) {
+      console.error('Vote update error:', error);
+      // Fallback: manual update
+      const { data: featureData } = await supabase
+        .from('feature_votes')
+        .select('votes_count')
+        .eq('id', feature_id)
+        .single();
+      
+      if (featureData) {
+        await supabase
+          .from('feature_votes')
+          .update({ 
+            votes_count: Math.max(0, (featureData.votes_count || 0) + voteChange)
+          })
+          .eq('id', feature_id);
+      }
+    }
+    
+    console.log('✅ Vote processed successfully');
+    res.json({ success: true, vote_change: voteChange });
+    
+  } catch (error) {
+    console.error('Vote feature error:', error);
+    res.status(500).json({ error: 'Failed to process vote' });
+  }
+});
+
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 DANGIT Server v2.3.0-SECURE running on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 DANGIT Server v2.4.0-SECURE+FEEDBACK running on http://0.0.0.0:${PORT}`);
   console.log('🔒 SECURITY: All user endpoints now require authentication');
   console.log('✨ Enhanced Features: Secure Auth, Image Storage, Link Previews, View Tracking, Title Updates');
+  console.log('💬 NEW: Feedback System with Feature Voting');
   console.log('📊 AI Models: GPT-4o (vision), GPT-4o-mini (text)');
   console.log('🗂️ Storage: Supabase Storage for images');
 });
