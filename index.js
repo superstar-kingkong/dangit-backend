@@ -41,6 +41,28 @@ console.log('✅ Server initialized with environment variables');
 console.log('📍 Supabase URL:', process.env.NEXT_PUBLIC_SUPABASE_URL);
 console.log('🔑 OpenAI API key:', process.env.OPENAI_API_KEY ? '***' + process.env.OPENAI_API_KEY.slice(-4) : 'NOT SET');
 
+// ✅ CRITICAL: Content size limiter to prevent egress overuse
+function limitContentSize(content, contentType) {
+  if (!content) return null;
+  
+  // For text content, keep small excerpt only
+  if (contentType === 'text') {
+    return content.length > 1000 ? content.substring(0, 1000) : content;
+  }
+  
+  // For URL content, don't save HTML at all (we have title/description already)
+  if (contentType === 'url') {
+    return null; // ✅ NEVER save full webpage HTML
+  }
+  
+  // For images, don't save base64 data (we upload to storage instead)
+  if (contentType === 'image') {
+    return null;
+  }
+  
+  return null; // Default: don't save large content
+}
+
 // Helper function to clean JSON response
 function cleanJSONResponse(response) {
   if (!response) throw new Error('Empty response');
@@ -115,10 +137,10 @@ async function authenticateUser(req, res, next) {
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    message: 'DANGIT server running with SECURE authentication',
+    message: 'DANGIT server running with SECURE authentication + EGRESS OPTIMIZED',
     timestamp: new Date().toISOString(),
-    version: '2.4.0-SECURE+FEEDBACK',
-    features: ['🔒 Secure Auth', 'Enhanced AI Analysis', 'Image Storage', 'Link Previews', 'View Tracking', '💬 Feedback System']
+    version: '2.5.0-EGRESS-OPTIMIZED',
+    features: ['🔒 Secure Auth', '📊 Egress Optimized', 'Enhanced AI Analysis', 'Image Storage', 'Link Previews', 'View Tracking', '💬 Feedback System']
   });
 });
 
@@ -601,7 +623,7 @@ app.post('/api/scrape', async (req, res) => {
 // 🔒 PROTECTED ENDPOINTS (Authentication required)
 // ============================================
 
-// Get saved items endpoint - SECURE
+// ✅ EGRESS OPTIMIZED: Get saved items endpoint - SECURE
 app.get('/api/saved-items', authenticateUser, async (req, res) => {
   try {
     const { category } = req.query;
@@ -609,9 +631,26 @@ app.get('/api/saved-items', authenticateUser, async (req, res) => {
     
     console.log('🔒 Securely fetching saved items for user:', userId);
     
+    // ✅ CRITICAL: Select only necessary fields, exclude original_content to save bandwidth
     let query = supabase
       .from('saved_items')
-      .select('*')
+      .select(`
+        id,
+        title,
+        content_type,
+        ai_summary,
+        ai_category,
+        ai_tags,
+        is_completed,
+        view_count,
+        created_at,
+        updated_at,
+        last_viewed_at,
+        original_image_url,
+        preview_data,
+        content_metadata,
+        notifications
+      `) // ✅ Excludes original_content which was causing egress issues
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
     
@@ -626,7 +665,7 @@ app.get('/api/saved-items', authenticateUser, async (req, res) => {
       return res.status(500).json({ error: 'Failed to fetch items' });
     }
     
-    console.log(`✅ Found ${data.length} items for authenticated user`);
+    console.log(`✅ Found ${data.length} items for authenticated user (EGRESS OPTIMIZED)`);
     res.json({ data });
     
   } catch (error) {
@@ -685,7 +724,7 @@ app.post('/api/storage/upload-image', authenticateUser, async (req, res) => {
   }
 });
 
-// Enhanced process content endpoint - SECURE
+// ✅ EGRESS OPTIMIZED: Enhanced process content endpoint - SECURE
 app.post('/api/process-content', authenticateUser, async (req, res) => {
   try {
     const { content, contentType } = req.body;
@@ -802,15 +841,20 @@ app.post('/api/process-content', authenticateUser, async (req, res) => {
       };
     }
     
+    // ✅ CRITICAL EGRESS FIX: Limit original_content to prevent bandwidth issues
+    const limitedContent = limitContentSize(content, contentType);
+    
+    console.log(`📊 Content size: Original: ${content?.length || 0} chars, Limited: ${limitedContent?.length || 0} chars`);
+    
     // SAVE TO DATABASE WITH AUTHENTICATED USER
-    console.log('💾 Saving to database for authenticated user...');
+    console.log('💾 Saving to database for authenticated user (EGRESS OPTIMIZED)...');
     const { data, error } = await supabase
       .from('saved_items')
       .insert({
         user_id: userId, // From authenticated token
         title: processedContent.title,
         content_type: contentType,
-        original_content: contentType === 'image' ? null : content,
+        original_content: limitedContent, // ✅ LIMITED SIZE to prevent egress issues
         original_image_url: imageUrl,
         preview_data: previewData,
         content_metadata: contentMetadata,
@@ -831,7 +875,7 @@ app.post('/api/process-content', authenticateUser, async (req, res) => {
       });
     }
 
-    console.log('✅ Successfully saved with enhanced security!');
+    console.log('✅ Successfully saved with enhanced security and egress optimization!');
     res.json({ success: true, data: data });
     
   } catch (error) {
@@ -1395,10 +1439,11 @@ app.post('/api/features/vote', authenticateUser, async (req, res) => {
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 DANGIT Server v2.4.0-SECURE+FEEDBACK running on http://0.0.0.0:${PORT}`);
+  console.log(`🚀 DANGIT Server v2.5.0-EGRESS-OPTIMIZED running on http://0.0.0.0:${PORT}`);
   console.log('🔒 SECURITY: All user endpoints now require authentication');
+  console.log('📊 EGRESS OPTIMIZED: Content size limited, original_content excluded from responses');
   console.log('✨ Enhanced Features: Secure Auth, Image Storage, Link Previews, View Tracking, Title Updates');
   console.log('💬 NEW: Feedback System with Feature Voting');
-  console.log('📊 AI Models: GPT-4o (vision), GPT-4o-mini (text)');
+  console.log('🎯 AI Models: GPT-4o (vision), GPT-4o-mini (text)');
   console.log('🗂️ Storage: Supabase Storage for images');
 });
